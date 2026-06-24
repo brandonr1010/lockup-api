@@ -42,6 +42,11 @@ D-score: 25=active Form4 sellers,22=multiple Form4,20=early release,15=VC/PE no 
 12=expired selling evidence,8=PE/VC upcoming,5=corporate parent,0=no mechanism.
 Modifier -5 to +5. insider_pct=% held by insiders not yet distributed."""
 
+@app.route("/")
+def index():
+    from flask import send_from_directory
+    return send_from_directory('.', 'index.html')
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})

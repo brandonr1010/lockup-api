@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPO Lockup Monitor — Lucida Capital</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f11;--surface:#18181c;--surface2:#222228;
+  --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.14);
+  --text:#f0f0f2;--text2:#9898a8;--text3:#55556a;
+  --accent:#4f8ef7;--accent-dim:rgba(79,142,247,0.12);
+  --high-bg:#1a3a6e;--high-t:#7ab3ff;
+  --med-bg:#4a2e08;--med-t:#f5a623;
+  --low-bg:#3d2c00;--low-t:#f0b429;
+  --min-bg:#143a1a;--min-t:#52c97a;
+  --err-bg:#7f1f1f;--err-t:#f87171;
+  --ok-bg:#143a1a;--ok-t:#52c97a;
+  --r:10px;--rs:6px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.5}
+.layout{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+.sidebar{background:var(--surface);border-right:0.5px solid var(--border);padding:24px 14px;display:flex;flex-direction:column;gap:6px}
+.logo{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--text3);padding:0 10px;margin-bottom:20px;text-transform:uppercase}
+.logo span{color:var(--accent)}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--rs);cursor:pointer;color:var(--text2);font-size:13px;font-weight:500;transition:all .15s;border:none;background:none;width:100%;text-align:left}
+.nav:hover{background:var(--surface2);color:var(--text)}
+.nav.active{background:var(--accent-dim);color:var(--accent)}
+.main{display:flex;flex-direction:column}
+.topbar{padding:20px 28px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.topbar h1{font-size:16px;font-weight:600}
+.topbar p{font-size:12px;color:var(--text2);margin-top:2px}
+.content{padding:24px 28px;flex:1;max-width:780px}
+.page{display:none}.page.active{display:block}
+.card{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--r);padding:18px;margin-bottom:14px}
+.clabel{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--text3);text-transform:uppercase;margin-bottom:12px}
+input,select{background:var(--surface2);border:0.5px solid var(--border2);border-radius:var(--rs);color:var(--text);font-size:13px;padding:8px 11px;width:100%;outline:none;font-family:inherit;transition:border-color .15s}
+input:focus,select:focus{border-color:var(--accent)}
+input::placeholder{color:var(--text3)}
+input[readonly]{color:var(--text2)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--rs);font-size:13px;font-weight:500;cursor:pointer;border:none;transition:all .15s;font-family:inherit}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{opacity:.9}.btn-primary:disabled{opacity:.35;cursor:not-allowed}
+.btn-dl{background:var(--ok-bg);color:var(--ok-t);width:100%;justify-content:center;padding:12px;font-size:14px}
+.btn-dl:hover{opacity:.9}
+.row{display:flex;gap:10px;align-items:flex-end}.row .g{flex:1}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ff{grid-column:1/-1}
+.flabel{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
+.score-row{display:flex;align-items:center;gap:14px;padding:14px;background:var(--surface2);border-radius:var(--rs);margin-top:10px}
+.score-n{font-size:34px;font-weight:700;line-height:1}
+.score-r{flex:1}
+.tbadge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;margin-bottom:3px}
+.tHigh{background:var(--high-bg);color:var(--high-t)}
+.tMedium{background:var(--med-bg);color:var(--med-t)}
+.tLow{background:var(--low-bg);color:var(--low-t)}
+.tMinimal{background:var(--min-bg);color:var(--min-t)}
+.breakdown{font-size:12px;color:var(--text2)}
+.alert{padding:10px 13px;border-radius:var(--rs);font-size:13px;margin-top:8px;line-height:1.5}
+.ainfo{background:var(--accent-dim);color:#7ab3ff}
+.aok{background:var(--ok-bg);color:var(--ok-t)}
+.aerr{background:var(--err-bg);color:var(--err-t)}
+.aloading{background:var(--surface2);color:var(--text2)}
+.notes{margin-top:10px;padding:10px 13px;background:var(--surface2);border-radius:var(--rs);font-size:12px;color:var(--text2);line-height:1.6;border-left:3px solid var(--accent)}
+.divider{height:0.5px;background:var(--border);margin:14px 0}
+.htable{width:100%;border-collapse:collapse;font-size:13px}
+.htable th{text-align:left;padding:7px 10px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;border-bottom:0.5px solid var(--border)}
+.htable td{padding:9px 10px;border-bottom:0.5px solid var(--border);color:var(--text2)}
+.htable td:first-child{color:var(--text);font-weight:600}
+.htable tr:last-child td{border-bottom:none}
+.empty{text-align:center;padding:36px;color:var(--text3);font-size:13px}
+.status-bar{padding:10px 14px;background:var(--surface2);border-radius:var(--rs);font-size:12px;color:var(--text2);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--ok-t);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo">Lucida <span>Lockup</span></div>
+    <button class="nav active" onclick="showPage('auto',this)">⚡ Auto Scanner</button>
+    <button class="nav" onclick="showPage('manual',this)">＋ Add Manually</button>
+    <button class="nav" onclick="showPage('history',this)">◷ History</button>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="ptitle">Auto Scanner</h1>
+        <p id="psub">Daily SEC EDGAR scan — fully automated</p>
+      </div>
+    </div>
+    <div class="content">
+
+      <!-- AUTO PAGE -->
+      <div class="page active" id="page-auto">
+        <div class="status-bar">
+          <div class="pulse"></div>
+          Scanner runs daily at 6am ET · Pulls new 424B4 filings · Top 10 by score added automatically
+        </div>
+        <div class="card">
+          <div class="clabel">Workbook</div>
+          <p style="font-size:13px;color:var(--text2);margin-bottom:14px">Your workbook lives in Supabase and updates automatically every day. Download the latest version anytime.</p>
+          <button class="btn btn-dl" onclick="downloadWorkbook()">⬇ Download Latest Lockup_automation2.xlsm</button>
+          <div id="dl-status" class="hidden"></div>
+        </div>
+        <div class="card">
+          <div class="clabel">Run scan now</div>
+          <p style="font-size:13px;color:var(--text2);margin-bottom:14px">Trigger a manual scan of today's SEC EDGAR filings.</p>
+          <button class="btn btn-primary" onclick="triggerScan()" id="scan-btn">Run Scanner Now →</button>
+          <div id="scan-status" class="hidden"></div>
+        </div>
+        <div class="card">
+          <div class="clabel">Recent additions</div>
+          <div id="auto-history"><div class="empty">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- MANUAL PAGE -->
+      <div class="page" id="page-manual">
+        <div class="card">
+          <div class="clabel">Research ticker</div>
+          <div class="row">
+            <div class="g"><input type="text" id="ticker-input" placeholder="e.g. PTRN" maxlength="10" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter')researchTicker()"></div>
+            <button class="btn btn-primary" onclick="researchTicker()" id="research-btn">Research →</button>
+          </div>
+          <div id="research-status" class="hidden"></div>
+        </div>
+
+        <div class="card hidden" id="fields-card">
+          <div class="clabel">Review & confirm</div>
+          <div class="fields">
+            <div><label class="flabel">Ticker</label><input type="text" id="f-ticker" readonly></div>
+            <div><label class="flabel">Prospectus date</label><input type="text" id="f-prosp-date" placeholder="YYYY-MM-DD" oninput="updateScore()"></div>
+            <div class="ff"><label class="flabel">Company</label><input type="text" id="f-company"></div>
+            <div><label class="flabel">Lockup days</label><input type="number" id="f-lockup-days" oninput="updateScore()"></div>
+            <div><label class="flabel">Insider %</label><input type="number" step="0.1" id="f-insider-pct" oninput="updateScore()"></div>
+            <div><label class="flabel">EV/Sales</label><input type="text" id="f-ev-sales" placeholder="NM or number" oninput="updateScore()"></div>
+            <div><label class="flabel">EV/EBITDA</label><input type="text" id="f-ev-ebitda" placeholder="NM or number" oninput="updateScore()"></div>
+            <div><label class="flabel">D-Score (0–25)</label><input type="number" id="f-d-score" min="0" max="25" oninput="updateScore()"></div>
+            <div><label class="flabel">Modifier (−5 to +5)</label><input type="number" id="f-modifier" min="-5" max="5" oninput="updateScore()"></div>
+            <div><label class="flabel">Early release?</label><select id="f-early-release"><option value="No">No</option><option value="Yes">Yes</option></select></div>
+            <div class="ff"><label class="flabel">Sponsor / seller</label><input type="text" id="f-sponsor"></div>
+            <div class="ff"><label class="flabel">SEC source</label><input type="text" id="f-sec-source"></div>
+          </div>
+          <div class="score-row">
+            <div class="score-n" id="score-num">—</div>
+            <div class="score-r">
+              <div class="tbadge" id="score-tier">—</div>
+              <div class="breakdown" id="score-breakdown"></div>
+            </div>
+          </div>
+          <div id="notes-box" class="notes hidden"></div>
+          <div class="divider"></div>
+          <button class="btn btn-primary" id="add-btn" onclick="addManual()" disabled style="width:100%;justify-content:center;padding:11px;">
+            Add to workbook
+          </button>
+          <div id="add-status" class="hidden"></div>
+        </div>
+      </div>
+
+      <!-- HISTORY PAGE -->
+      <div class="page" id="page-history">
+        <div class="card">
+          <div class="clabel">All entries</div>
+          <div id="history-content"><div class="empty">Loading...</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'https://lockup-api-production.up.railway.app';
+const CRON_SECRET = 'lucida-lockup-2026';
+
+function showPage(p, btn) {
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav').forEach(el => el.classList.remove('active'));
+  document.getElementById(`page-${p}`).classList.add('active');
+  if(btn) btn.classList.add('active');
+  const titles = {auto:'Auto Scanner',manual:'Add Manually',history:'History'};
+  const subs = {auto:'Daily SEC EDGAR scan — fully automated',manual:'Research a ticker and add it manually',history:'All entries added to the workbook'};
+  document.getElementById('ptitle').textContent = titles[p];
+  document.getElementById('psub').textContent = subs[p];
+  if(p==='auto') loadAutoHistory();
+  if(p==='history') loadHistory();
+}
+
+function showAlert(id, msg, type) {
+  const el = document.getElementById(id);
+  el.className = `alert a${type}`;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function excelRound(val, dec) {
+  const f = Math.pow(10, dec);
+  return Math.floor(val * f + 0.5) / f;
+}
+
+function updateScore() {
+  const ins = parseFloat(document.getElementById('f-insider-pct').value)||0;
+  const fp = 100-ins;
+  const evS = document.getElementById('f-ev-sales').value;
+  const evE = document.getElementById('f-ev-ebitda').value;
+  const d = parseFloat(document.getElementById('f-d-score').value)||0;
+  const e = parseFloat(document.getElementById('f-modifier').value)||0;
+  const A = excelRound(Math.min(ins/Math.max(fp,0.01),5)/5*30,1);
+  const B = excelRound(Math.min(ins/100,1)*25,1);
+  const cS = isNaN(parseFloat(evS))?0:Math.min(parseFloat(evS)/5*10,10);
+  const cE = isNaN(parseFloat(evE))?0:Math.min(Math.max(parseFloat(evE)-5,0)/25*10,10);
+  const C = excelRound(cS+cE,1);
+  const raw = excelRound(A+B+C+d+e,1);
+  const score = Math.round(Math.max(0,Math.min(100,excelRound(raw,0))));
+  const tier = score>=75?'High':score>=50?'Medium':score>=25?'Low':'Minimal';
+  document.getElementById('score-num').textContent = score;
+  const tb = document.getElementById('score-tier');
+  tb.textContent=tier; tb.className=`tbadge t${tier}`;
+  document.getElementById('score-breakdown').textContent=`A=${A}+B=${B}+C=${C}+D=${d}+E=${e}=${raw}`;
+  document.getElementById('add-btn').disabled = false;
+}
+
+async function researchTicker() {
+  const ticker = document.getElementById('ticker-input').value.trim();
+  if(!ticker) return;
+  document.getElementById('research-btn').disabled=true;
+  showAlert('research-status',`Researching ${ticker} on SEC EDGAR...`,'loading');
+  document.getElementById('fields-card').classList.add('hidden');
+  try {
+    const res = await fetch(`${API}/research`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker})});
+    const json = await res.json();
+    if(!json.success) throw new Error(json.error);
+    const d = json.data;
+    document.getElementById('f-ticker').value=d.ticker||ticker;
+    document.getElementById('f-company').value=d.company||'';
+    document.getElementById('f-prosp-date').value=d.prospectus_date||'';
+    document.getElementById('f-lockup-days').value=d.lockup_days||180;
+    document.getElementById('f-sec-source').value=d.sec_source||'';
+    document.getElementById('f-sponsor').value=d.sponsor||'';
+    document.getElementById('f-insider-pct').value=d.insider_pct||'';
+    document.getElementById('f-ev-sales').value=d.ev_sales||'NM';
+    document.getElementById('f-ev-ebitda').value=d.ev_ebitda||'NM';
+    document.getElementById('f-d-score').value=d.d_score||0;
+    document.getElementById('f-modifier').value=d.modifier||0;
+    document.getElementById('f-early-release').value=d.early_release||'No';
+    if(d.notes){const nb=document.getElementById('notes-box');nb.textContent=d.notes+(d.flags?.length?' ⚠️ Verify: '+d.flags.join(', '):'');nb.classList.remove('hidden')}
+    updateScore();
+    document.getElementById('fields-card').classList.remove('hidden');
+    showAlert('research-status',`Research complete for ${d.company}.`,'ok');
+  } catch(err) {
+    showAlert('research-status',`Research failed: ${err.message}`,'err');
+    document.getElementById('f-ticker').value=ticker;
+    document.getElementById('fields-card').classList.remove('hidden');
+    updateScore();
+  }
+  document.getElementById('research-btn').disabled=false;
+}
+
+async function addManual() {
+  document.getElementById('add-btn').disabled=true;
+  showAlert('add-status','Adding to workbook...','loading');
+  const params = {
+    ticker:document.getElementById('f-ticker').value.trim(),
+    company:document.getElementById('f-company').value.trim(),
+    prospectus_date:document.getElementById('f-prosp-date').value.trim(),
+    lockup_days:document.getElementById('f-lockup-days').value,
+    insider_pct:document.getElementById('f-insider-pct').value,
+    ev_sales:document.getElementById('f-ev-sales').value.trim(),
+    ev_ebitda:document.getElementById('f-ev-ebitda').value.trim(),
+    d_score:document.getElementById('f-d-score').value,
+    modifier:document.getElementById('f-modifier').value,
+    early_release:document.getElementById('f-early-release').value,
+    sec_source:document.getElementById('f-sec-source').value.trim(),
+    sponsor:document.getElementById('f-sponsor').value.trim(),
+  };
+  try {
+    const res = await fetch(`${API}/add`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
+    const json = await res.json();
+    if(!json.success) throw new Error(json.error);
+    showAlert('add-status',`✓ ${json.ticker} added (score ${json.score}, ${json.tier}). Download updated workbook from Auto Scanner tab.`,'ok');
+  } catch(err) {
+    showAlert('add-status',`Error: ${err.message}`,'err');
+  }
+  document.getElementById('add-btn').disabled=false;
+}
+
+async function downloadWorkbook() {
+  showAlert('dl-status','Downloading...','loading');
+  try {
+    const res = await fetch(`${API}/download`);
+    if(!res.ok) throw new Error('Download failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='Lockup_automation2.xlsm';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    showAlert('dl-status','Downloaded successfully.','ok');
+  } catch(err) {
+    showAlert('dl-status',`Error: ${err.message}`,'err');
+  }
+}
+
+async function triggerScan() {
+  document.getElementById('scan-btn').disabled=true;
+  showAlert('scan-status','Triggering scan — this runs in the background, check back in a few minutes.','loading');
+  try {
+    const res = await fetch(`${API}/scan`,{method:'POST',headers:{'X-Cron-Secret':CRON_SECRET}});
+    const json = await res.json();
+    if(!json.success) throw new Error(json.error);
+    showAlert('scan-status','Scan started. Refresh history in ~2 minutes to see new entries.','ok');
+  } catch(err) {
+    showAlert('scan-status',`Error: ${err.message}`,'err');
+  }
+  document.getElementById('scan-btn').disabled=false;
+}
+
+async function loadAutoHistory() {
+  document.getElementById('auto-history').innerHTML='<div class="empty">Loading...</div>';
+  try {
+    const res = await fetch(`${API}/history`);
+    const json = await res.json();
+    if(!json.success||!json.data.length){document.getElementById('auto-history').innerHTML='<div class="empty">No entries yet.</div>';return}
+    const rows = json.data.slice(0,5).map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()}</td></tr>`).join('');
+    document.getElementById('auto-history').innerHTML=`<table class="htable"><thead><tr><th>Ticker</th><th>Company</th><th>Score</th><th>Added</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch(err){document.getElementById('auto-history').innerHTML='<div class="empty">Could not load.</div>'}
+}
+
+async function loadHistory() {
+  document.getElementById('history-content').innerHTML='<div class="empty">Loading...</div>';
+  try {
+    const res = await fetch(`${API}/history`);
+    const json = await res.json();
+    if(!json.success||!json.data.length){document.getElementById('history-content').innerHTML='<div class="empty">No entries yet.</div>';return}
+    const rows = json.data.map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td>${e.prospectus_date||''}</td><td>${e.lockup_days||''}d</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()}</td></tr>`).join('');
+    document.getElementById('history-content').innerHTML=`<table class="htable"><thead><tr><th>Ticker</th><th>Company</th><th>Prosp. Date</th><th>Lockup</th><th>Score</th><th>Added</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch(err){document.getElementById('history-content').innerHTML='<div class="empty">Could not load.</div>'}
+}
+
+loadAutoHistory();
+</script>
+</body>
+</html>
