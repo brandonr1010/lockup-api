@@ -65,11 +65,14 @@ def research():
     if not ticker: return jsonify({"error": "Ticker required"}), 400
     try:
         response = anthropic.messages.create(
-            model="claude-sonnet-4-6", max_tokens=1000,
+            model="claude-sonnet-4-6", max_tokens=1500,
+            system="You are a financial data extraction API. You must respond with ONLY a valid JSON object. No text before or after. No markdown. No explanation. Start with { and end with }.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": RESEARCH_PROMPT.format(ticker=ticker)}]
         )
         text = "".join(b.text for b in response.content if b.type == "text")
+        # Strip any markdown fences
+        text = text.replace("```json", "").replace("```", "").strip()
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end == -1:
