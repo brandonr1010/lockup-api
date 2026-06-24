@@ -125,6 +125,13 @@ def add_name_to_workbook(file_bytes, params):
 
     # Write SS
     copy_row_fmt(wsSS, 6, wsSS, nextRow, 14)
+    # Clear row background — only score/tier cols get tier color; row fill depends on tier
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
+    row_bg = TIER_ROW_BG.get(tier, "FFFFFFFF")
+    for col in [2,3,4,5,6,7,8,9,10,11,14]:
+        c = wsSS.cell(row=nextRow, column=col)
+        if not isinstance(c, MergedCell):
+            c.fill = PatternFill("solid", start_color=row_bg, end_color=row_bg)
     safe_set(wsSS, nextRow, 2, "=ROW()-4"); safe_set(wsSS, nextRow, 3, TICKER)
     safe_set(wsSS, nextRow, 4, COMPANY);   safe_set(wsSS, nextRow, 5, lockup_date)
     safe_set(wsSS, nextRow, 6, f"=E{nextRow}-TODAY()"); safe_set(wsSS, nextRow, 7, prosp_date)
