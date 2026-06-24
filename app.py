@@ -70,7 +70,11 @@ def research():
             messages=[{"role": "user", "content": RESEARCH_PROMPT.format(ticker=ticker)}]
         )
         text = "".join(b.text for b in response.content if b.type == "text")
-        parsed = json.loads(text[text.find("{"):text.rfind("}")+1])
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1:
+            return jsonify({"error": f"Claude returned no JSON. Raw: {text[:300]}"}), 500
+        parsed = json.loads(text[start:end+1])
         return jsonify({"success": True, "data": parsed})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
