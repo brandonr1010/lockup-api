@@ -125,3 +125,22 @@ def history():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+@app.route("/test-raw", methods=["GET"])
+def test_raw():
+    import requests
+    from datetime import date
+    headers = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
+    today = date.today()
+    qtr = (today.month - 1) // 3 + 1
+    url = f"https://www.sec.gov/Archives/edgar/full-index/{today.year}/QTR{qtr}/company.idx"
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        return jsonify({
+            "status": r.status_code,
+            "headers": dict(r.headers),
+            "preview": r.text[:500],
+            "url": url
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
