@@ -144,3 +144,28 @@ def test_raw():
         })
     except Exception as e:
         return jsonify({"error": str(e)})
+
+@app.route("/test-parse", methods=["GET"])
+def test_parse():
+    import requests
+    from datetime import date
+    headers = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
+    today = date.today()
+    qtr = (today.month - 1) // 3 + 1
+    url = f"https://www.sec.gov/Archives/edgar/full-index/{today.year}/QTR{qtr}/company.idx"
+    try:
+        r = requests.get(url, headers=headers, timeout=60)
+        lines = r.text.split('\n')
+        # Find first 3 lines containing 424B4
+        hits = [l for l in lines if '424B4' in l][:3]
+        # Also show first 10 non-header lines so we can see exact format
+        data_lines = [l for l in lines if l.strip() and not l.startswith('Description') and not l.startswith('Last') and not l.startswith('Comments') and not l.startswith('Anonymous') and not l.startswith('Company') and not l.startswith('---')][:5]
+        return jsonify({
+            "status": r.status_code,
+            "total_lines": len(lines),
+            "424b4_count": len([l for l in lines if '424B4' in l]),
+            "sample_424b4_lines": hits,
+            "sample_data_lines": data_lines
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
