@@ -230,4 +230,15 @@ def run():
     if added > 0:
         upload_workbook(file_bytes)
 
+    # Update momentum (price + Form 4) for all tickers — free, no Claude API
+    log.info("Updating momentum in thesis cells...")
+    try:
+        from momentum import update_momentum
+        latest = download_workbook()
+        latest = update_momentum(latest)
+        upload_workbook(latest)
+        log.info("Momentum update complete.")
+    except Exception as e:
+        log.error(f"Momentum update failed: {e}")
+
     log.info(f"=== Done. {added} names added. ===")

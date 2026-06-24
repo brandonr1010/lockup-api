@@ -110,6 +110,17 @@ def add():
                 "early_release": params.get("early_release","No"),
             }).execute()
         except: pass
+        # Update momentum for all tickers after any add
+        try:
+            from momentum import update_momentum
+            fresh = supabase.storage.from_(BUCKET).download(FILE_NAME)
+            fresh = update_momentum(fresh)
+            supabase.storage.from_(BUCKET).update(
+                FILE_NAME, fresh,
+                {"content-type": "application/vnd.ms-excel.sheet.macroEnabled.12", "upsert": "true"}
+            )
+        except Exception as me:
+            pass  # momentum failure shouldn't block the add response
         return jsonify({"success": True, "score": score, "tier": tier,
                         "days_out": days_out, "ticker": params["ticker"]})
     except Exception as e:

@@ -4,4 +4,5 @@ anthropic==0.40.0
 supabase==2.9.1
 openpyxl==3.1.5
 gunicorn==23.0.0
-requests==2.32.3
+
+yfinance==0.2.61
