@@ -21,7 +21,7 @@ anthropic = Anthropic(api_key=ANTHROPIC_KEY)
 
 RESEARCH_PROMPT = """You are a financial research assistant for an IPO lockup expiry short-candidate screen.
 Research the ticker {ticker} using SEC EDGAR and financial data sources.
-Return ONLY a JSON object, no other text:
+Your response must contain ONLY a valid JSON object — no preamble, no explanation, no markdown, no text before or after the JSON. Start your response with {{ and end with }}.
 {{
   "ticker": "{ticker}",
   "company": "Full legal company name",
