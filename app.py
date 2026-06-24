@@ -116,3 +116,12 @@ def history():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+@app.route("/test-edgar", methods=["GET"])
+def test_edgar():
+    try:
+        from workbook import fetch_recent_filings
+        filings = fetch_recent_filings(days_back=7)
+        return jsonify({"success": True, "count": len(filings), "filings": filings[:10]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
