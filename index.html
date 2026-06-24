@@ -322,7 +322,7 @@ async function loadAutoHistory() {
     const res = await fetch(`${API}/history`);
     const json = await res.json();
     if(!json.success||!json.data.length){document.getElementById('auto-history').innerHTML='<div class="empty">No entries yet.</div>';return}
-    const rows = json.data.slice(0,5).map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()}</td></tr>`).join('');
+    const rows = json.data.slice(0,5).map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()} ${new Date(e.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td></tr>`).join('');
     document.getElementById('auto-history').innerHTML=`<table class="htable"><thead><tr><th>Ticker</th><th>Company</th><th>Score</th><th>Added</th></tr></thead><tbody>${rows}</tbody></table>`;
   } catch(err){document.getElementById('auto-history').innerHTML='<div class="empty">Could not load.</div>'}
 }
@@ -333,7 +333,7 @@ async function loadHistory() {
     const res = await fetch(`${API}/history`);
     const json = await res.json();
     if(!json.success||!json.data.length){document.getElementById('history-content').innerHTML='<div class="empty">No entries yet.</div>';return}
-    const rows = json.data.map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td>${e.prospectus_date||''}</td><td>${e.lockup_days||''}d</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()}</td></tr>`).join('');
+    const rows = json.data.map(e=>`<tr><td>${e.ticker}</td><td style="color:var(--text)">${e.company}</td><td>${e.prospectus_date||''}</td><td>${e.lockup_days||''}d</td><td><span class="tbadge t${e.tier}">${e.score}</span></td><td>${new Date(e.created_at).toLocaleDateString()} ${new Date(e.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</td></tr>`).join('');
     document.getElementById('history-content').innerHTML=`<table class="htable"><thead><tr><th>Ticker</th><th>Company</th><th>Prosp. Date</th><th>Lockup</th><th>Score</th><th>Added</th></tr></thead><tbody>${rows}</tbody></table>`;
   } catch(err){document.getElementById('history-content').innerHTML='<div class="empty">Could not load.</div>'}
 }

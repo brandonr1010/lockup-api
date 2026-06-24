@@ -111,14 +111,37 @@ def download():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+scan_log = []
+
+def run_scanner_logged():
+    global scan_log
+    scan_log = []
+    import logging
+    class ListHandler(logging.Handler):
+        def emit(self, record):
+            scan_log.append(self.format(record))
+    handler = ListHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    logging.getLogger().addHandler(handler)
+    try:
+        run_scanner()
+    except Exception as e:
+        scan_log.append(f"FATAL: {e}")
+    finally:
+        logging.getLogger().removeHandler(handler)
+
 @app.route("/scan", methods=["POST"])
 def scan():
     if request.headers.get("X-Cron-Secret","") != CRON_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
-    thread = threading.Thread(target=run_scanner)
+    thread = threading.Thread(target=run_scanner_logged)
     thread.daemon = True
     thread.start()
     return jsonify({"success": True, "message": "Scan started"})
+
+@app.route("/scan-log", methods=["GET"])
+def get_scan_log():
+    return jsonify({"log": scan_log[-50:], "count": len(scan_log)})
 
 @app.route("/history", methods=["GET"])
 def history():
