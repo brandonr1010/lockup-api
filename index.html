@@ -259,7 +259,7 @@ async function researchTicker() {
   document.getElementById('research-btn').disabled=false;
 }
 
-async function addManual() {
+async function addManual(force=false) {
   document.getElementById('add-btn').disabled=true;
   showAlert('add-status','Adding to workbook...','loading');
   const params = {

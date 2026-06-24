@@ -86,6 +86,12 @@ def research():
 def add():
     params = request.json
     if not params: return jsonify({"error": "No params"}), 400
+    ticker = params.get("ticker","").upper().strip()
+    # Check for duplicate unless force flag is set
+    if not params.get("force"):
+        existing = supabase.table("lockup_entries").select("ticker").eq("ticker", ticker).execute()
+        if existing.data:
+            return jsonify({"error": f"{ticker} is already in the workbook.", "duplicate": True}), 409
     try:
         file_bytes = supabase.storage.from_(BUCKET).download(FILE_NAME)
         updated_bytes, score, tier, days_out = add_name_to_workbook(file_bytes, params)
