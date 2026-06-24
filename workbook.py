@@ -11,7 +11,13 @@ ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 BUCKET        = "workbook"
 FILE_NAME     = "Lockup_automation2.xlsm"
 MAX_PER_RUN   = 10
-HEADERS       = {"User-Agent": "Lucida Capital research@lucida.com"}
+
+# SEC requires this exact format: "Name Email" — no org name
+HEADERS = {
+    "User-Agent": "Brandon Ross brandonr1010@gmail.com",
+    "Accept-Encoding": "gzip, deflate",
+    "Host": "data.sec.gov"
+}
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -50,127 +56,97 @@ def already_processed(ticker):
     res = supabase.table("lockup_entries").select("ticker").eq("ticker", ticker).execute()
     return len(res.data) > 0
 
-def fetch_recent_filings(days_back=1):
-    """Fetch recent 424B4 filings from EDGAR using the submissions API."""
-    end   = date.today()
-    start = end - timedelta(days=max(days_back, 7))  # minimum 7 days to ensure results
+def fetch_recent_filings(days_back=7):
+    """Fetch recent 424B4 filings using EDGAR's data.sec.gov submissions API."""
+    log.info(f"Fetching recent 424B4 filings (last {days_back} days)...")
     
-    log.info(f"Fetching 424B4 filings from {start} to {end}")
+    cutoff = date.today() - timedelta(days=days_back)
     
-    # Use EDGAR full text search - correct endpoint
+    # Use EDGAR company search to find recent 424B4 filers
+    # data.sec.gov is the API endpoint designed for programmatic access
+    url = "https://data.sec.gov/submissions/recent.json"
+    headers = {
+        "User-Agent": "Brandon Ross brandonr1010@gmail.com",
+        "Accept-Encoding": "gzip, deflate"
+    }
+    
+    try:
+        time.sleep(0.5)  # SEC rate limit: 10 req/sec max
+        r = requests.get(url, headers=headers, timeout=30)
+        log.info(f"data.sec.gov status: {r.status_code}")
+        
+        if r.status_code == 200:
+            data = r.json()
+            filings = []
+            seen = set()
+            
+            recent = data.get("filings", {}).get("recent", {})
+            forms       = recent.get("form", [])
+            dates       = recent.get("filedAt", recent.get("filingDate", []))
+            companies   = recent.get("entityName", recent.get("primaryDocument", []))
+            accessions  = recent.get("accessionNumber", [])
+            
+            for i, form in enumerate(forms):
+                if form == "424B4":
+                    filed = dates[i] if i < len(dates) else ""
+                    company = companies[i] if i < len(companies) else ""
+                    try:
+                        if filed and date.fromisoformat(filed[:10]) >= cutoff:
+                            if company and company not in seen:
+                                seen.add(company)
+                                filings.append({
+                                    "entity_name": company,
+                                    "file_date": filed[:10],
+                                    "accession": accessions[i] if i < len(accessions) else ""
+                                })
+                                log.info(f"  Found: {company} ({filed[:10]})")
+                    except: pass
+            
+            log.info(f"Found {len(filings)} 424B4 filings")
+            if filings:
+                return filings
+    except Exception as e:
+        log.error(f"data.sec.gov error: {e}")
+    
+    # Fallback: use EDGAR full text search with correct params
+    return fetch_via_efts(cutoff)
+
+def fetch_via_efts(cutoff):
+    """EDGAR full text search fallback."""
+    log.info("Trying EDGAR full text search...")
+    headers = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
     url = "https://efts.sec.gov/LATEST/search-index"
     params = {
         "q": '"lock-up"',
         "forms": "424B4",
         "dateRange": "custom",
-        "startdt": start.isoformat(),
-        "enddt": end.isoformat(),
-        "hits.hits.total.relation": "eq",
-        "_source": "entity_name,file_date,period_of_report",
-        "size": 20
+        "startdt": cutoff.isoformat(),
+        "enddt": date.today().isoformat(),
+        "size": "20"
     }
-    
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
-        log.info(f"EDGAR response status: {r.status_code}")
-        log.info(f"EDGAR URL: {r.url}")
-        
-        if r.status_code != 200:
-            log.error(f"EDGAR error: {r.text[:300]}")
-            return fetch_via_rss()
-            
-        data = r.json()
-        hits = data.get("hits", {}).get("hits", [])
-        total = data.get("hits", {}).get("total", {}).get("value", 0)
-        log.info(f"EDGAR total results: {total}, returned: {len(hits)}")
-        
-        if not hits:
-            log.info("No hits from EDGAR search, trying RSS fallback...")
-            return fetch_via_rss()
-        
-        filings = []
-        seen = set()
-        for h in hits:
-            src = h.get("_source", {})
-            name = src.get("entity_name", "")
-            if name and name not in seen:
-                seen.add(name)
-                filings.append({
-                    "entity_name": name,
-                    "file_date": src.get("file_date", end.isoformat()),
-                })
-                log.info(f"  Found: {name} ({src.get('file_date', '')})")
-        
-        return filings
-        
+        time.sleep(1)
+        r = requests.get(url, params=params, headers=headers, timeout=30)
+        log.info(f"EFTS status: {r.status_code} url: {r.url}")
+        if r.status_code == 200:
+            data = r.json()
+            hits = data.get("hits", {}).get("hits", [])
+            log.info(f"EFTS hits: {len(hits)}")
+            filings = []
+            seen = set()
+            for h in hits:
+                src = h.get("_source", {})
+                name = src.get("entity_name", "")
+                if name and name not in seen:
+                    seen.add(name)
+                    filings.append({"entity_name": name, "file_date": src.get("file_date", date.today().isoformat())})
+                    log.info(f"  EFTS found: {name}")
+            return filings
+        else:
+            log.error(f"EFTS error {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        log.error(f"EDGAR fetch error: {e}")
-        return fetch_via_rss()
-
-def fetch_via_rss():
-    """Fallback: fetch recent 424B4 filings via EDGAR RSS feed."""
-    log.info("Trying EDGAR RSS feed for 424B4 filings...")
-    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=424B4&dateb=&owner=include&count=40&search_text=&output=atom"
-    
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        log.info(f"RSS status: {r.status_code}")
-        
-        if r.status_code != 200:
-            log.error(f"RSS failed: {r.text[:200]}")
-            return []
-        
-        # Parse XML
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(r.text)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        
-        filings = []
-        seen = set()
-        cutoff = date.today() - timedelta(days=7)
-        
-        for entry in root.findall("atom:entry", ns):
-            title = entry.find("atom:title", ns)
-            updated = entry.find("atom:updated", ns)
-            
-            if title is None: continue
-            title_text = title.text or ""
-            
-            # Extract company name from title like "424B4 - Company Name (0001234567) (Filer)"
-            if " - " in title_text:
-                parts = title_text.split(" - ", 1)
-                if len(parts) > 1:
-                    company_part = parts[1]
-                    # Remove CIK and filer type
-                    if "(" in company_part:
-                        company_name = company_part[:company_part.rfind("(")].strip()
-                    else:
-                        company_name = company_part.strip()
-                    
-                    if company_name and company_name not in seen:
-                        file_date = date.today().isoformat()
-                        if updated is not None:
-                            try:
-                                file_date = updated.text[:10]
-                            except: pass
-                        
-                        # Only include recent filings
-                        try:
-                            if date.fromisoformat(file_date) >= cutoff:
-                                seen.add(company_name)
-                                filings.append({
-                                    "entity_name": company_name,
-                                    "file_date": file_date,
-                                })
-                                log.info(f"  RSS found: {company_name} ({file_date})")
-                        except: pass
-        
-        log.info(f"RSS returned {len(filings)} filings")
-        return filings
-        
-    except Exception as e:
-        log.error(f"RSS fetch error: {e}")
-        return []
+        log.error(f"EFTS error: {e}")
+    return []
 
 def research_ticker(company_name, filing_date):
     prompt = f"""You are a financial research assistant for an IPO lockup expiry short-candidate screen.
@@ -194,10 +170,10 @@ Return ONLY a JSON object with exactly these fields, no other text:
   "skip_reason": ""
 }}
 
-Set skip=true if: not a standard IPO lockup, SPAC, warrant offering, debt offering, or no lockup agreement.
-D-score: 25=active Form4 sellers,22=multiple Form4,20=early release triggered,15=VC/PE upcoming no selling,
+Set skip=true if: not a standard IPO lockup, SPAC, warrant offering, debt offering, shelf offering, or no lockup.
+D-score: 25=active Form4 sellers,22=multiple Form4,20=early release,15=VC/PE upcoming no selling,
 12=lockup expired selling evidence,8=PE/VC upcoming,5=corporate parent,0=no mechanism.
-Modifier -5 to +5. insider_pct=% held by insiders not yet distributed. Use numbers not strings for numeric fields."""
+Modifier -5 to +5. insider_pct=% held by insiders not yet distributed. Numbers not strings for numeric fields."""
 
     try:
         import anthropic
@@ -211,10 +187,10 @@ Modifier -5 to +5. insider_pct=% held by insiders not yet distributed. Use numbe
         text = "".join(b.text for b in response.content if b.type == "text")
         start = text.find("{"); end = text.rfind("}")
         if start == -1:
-            log.error(f"No JSON for {company_name}: {text[:200]}")
+            log.error(f"No JSON for {company_name}")
             return None
         parsed = json.loads(text[start:end+1])
-        log.info(f"Researched {company_name}: ticker={parsed.get('ticker')} skip={parsed.get('skip')} insider={parsed.get('insider_pct')} d={parsed.get('d_score')}")
+        log.info(f"Researched {company_name}: ticker={parsed.get('ticker')} skip={parsed.get('skip')}")
         return parsed
     except Exception as e:
         log.error(f"Research error for {company_name}: {e}")
@@ -273,7 +249,7 @@ def run():
         if already_processed(ticker):
             log.info(f"{ticker} already processed")
             continue
-        insider  = float(data.get("insider_pct") or 0)
+        insider   = float(data.get("insider_pct") or 0)
         float_pct = round(100 - insider, 2)
         score, tier = calc_score(insider, float_pct,
                                   data.get("ev_sales","NM"),
@@ -285,20 +261,20 @@ def run():
         candidates.append(data)
         time.sleep(2)
 
-    log.info(f"Total candidates to add: {len(candidates)}")
+    log.info(f"Total candidates: {len(candidates)}")
     candidates.sort(key=lambda x: x["_score"], reverse=True)
     candidates = candidates[:MAX_PER_RUN]
 
     added = 0
     for data in candidates:
         ticker = data["ticker"]
-        log.info(f"Adding {ticker} score={data['_score']} tier={data['_tier']}")
+        log.info(f"Adding {ticker} score={data['_score']}")
         try:
             from lockup_engine import add_name_to_workbook
             file_bytes, score, tier, days_out = add_name_to_workbook(file_bytes, data)
             log_entry(data, score, tier)
             added += 1
-            log.info(f"Added {ticker} successfully")
+            log.info(f"Added {ticker}")
         except Exception as e:
             log.error(f"Failed to add {ticker}: {e}")
 
