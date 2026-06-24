@@ -168,6 +168,7 @@ def add_name_to_workbook(file_bytes, params):
     sm_by_ticker = {r['ticker']: r for r in rows_sm}
     rows_sm_sorted = [sm_by_ticker[t] for t in ticker_order if t in sm_by_ticker]
 
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
     for idx, row in enumerate(rows_ss):
         r = 5 + idx
         for c in range(2,15):
@@ -180,6 +181,12 @@ def add_name_to_workbook(file_bytes, params):
         wsSS.cell(row=r,column=13).value=f"='Scoring Model'!P{r}"
         s=row['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         apply_tier(wsSS.cell(row=r,column=12),t); apply_tier(wsSS.cell(row=r,column=13),t)
+        # Re-apply correct row background after sort restores old fills
+        row_bg = TIER_ROW_BG.get(t, "FFFFFFFF")
+        for col in [2,3,4,5,6,7,8,9,10,11,14]:
+            c2 = wsSS.cell(row=r, column=col)
+            if not isinstance(c2, MergedCell):
+                c2.fill = PatternFill("solid", start_color=row_bg, end_color=row_bg)
 
     for idx, row in enumerate(rows_sm_sorted):
         r = 5 + idx
