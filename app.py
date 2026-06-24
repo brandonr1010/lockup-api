@@ -125,3 +125,26 @@ def test_edgar():
         return jsonify({"success": True, "count": len(filings), "filings": filings[:10]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/test-rss", methods=["GET"])
+def test_rss():
+    try:
+        import requests, xml.etree.ElementTree as ET
+        from datetime import date, timedelta
+        HEADERS = {"User-Agent": "Lucida Capital research@lucida.com"}
+        url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=424B4&dateb=&owner=include&count=20&search_text=&output=atom"
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        status = r.status_code
+        preview = r.text[:500]
+        entries = []
+        if r.status_code == 200:
+            root = ET.fromstring(r.text)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            for entry in root.findall("atom:entry", ns):
+                title = entry.find("atom:title", ns)
+                updated = entry.find("atom:updated", ns)
+                if title is not None:
+                    entries.append({"title": title.text, "date": updated.text[:10] if updated is not None else ""})
+        return jsonify({"status": status, "entry_count": len(entries), "entries": entries[:5], "preview": preview})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
