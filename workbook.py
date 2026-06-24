@@ -10,7 +10,7 @@ SUPABASE_KEY  = os.environ["SUPABASE_SERVICE_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 BUCKET        = "workbook"
 FILE_NAME     = "Lockup_automation2.xlsm"
-MAX_PER_RUN   = 5  # kept low to reduce SEC load
+MAX_PER_RUN   = 5
 
 SEC_HEADERS = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
 
@@ -34,8 +34,7 @@ def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
     return score, tier
 
 def download_workbook():
-    res = supabase.storage.from_(BUCKET).download(FILE_NAME)
-    return res
+    return supabase.storage.from_(BUCKET).download(FILE_NAME)
 
 def upload_workbook(file_bytes):
     supabase.storage.from_(BUCKET).update(
@@ -47,73 +46,64 @@ def already_processed(ticker):
     res = supabase.table("lockup_entries").select("ticker").eq("ticker", ticker).execute()
     return len(res.data) > 0
 
-def sec_get(url, retries=4):
-    """GET with exponential backoff on 429."""
-    for attempt in range(retries):
-        wait = 2 ** attempt  # 1s, 2s, 4s, 8s
-        time.sleep(wait)
-        try:
-            r = requests.get(url, headers=SEC_HEADERS, timeout=30)
-            log.info(f"SEC GET {url[-60:]} → {r.status_code}")
-            if r.status_code == 200:
-                return r
-            if r.status_code == 429:
-                retry_after = int(r.headers.get("Retry-After", 10))
-                log.warning(f"Rate limited — waiting {retry_after}s")
-                time.sleep(retry_after)
-            else:
-                log.error(f"HTTP {r.status_code}")
-                return None
-        except Exception as e:
-            log.error(f"Request error: {e}")
-    log.error(f"All retries failed for {url}")
-    return None
-
 def fetch_recent_filings(days_back=7):
     """
-    Fetch recent 424B4 filings using EDGAR's quarterly full-index company.gz file.
-    This is a single large file — one request, no repeated hits.
+    Fetch 424B4 filings from EDGAR quarterly index.
+    Format per line: CompanyName(fixed)  FormType  CIK  DateFiled  Filename
+    424B4 is at position 64, date at 88.
     """
-    log.info(f"Fetching 424B4 filings via quarterly index...")
-
-    today = date.today()
-    year  = today.year
-    qtr   = (today.month - 1) // 3 + 1
+    today  = date.today()
+    qtr    = (today.month - 1) // 3 + 1
     cutoff = today - timedelta(days=days_back)
+    url    = f"https://www.sec.gov/Archives/edgar/full-index/{today.year}/QTR{qtr}/company.idx"
 
-    # Full index for current quarter — one file, all filings
-    url = f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{qtr}/company.idx"
-    log.info(f"Fetching: {url}")
+    log.info(f"Fetching EDGAR index: {url}")
+    time.sleep(0.5)
 
-    r = sec_get(url)
-    if not r:
-        log.error("Could not fetch EDGAR index")
+    try:
+        r = requests.get(url, headers=SEC_HEADERS, timeout=60)
+        log.info(f"Status: {r.status_code}, Size: {len(r.content)} bytes")
+        if r.status_code != 200:
+            log.error(f"Failed: {r.text[:200]}")
+            return []
+    except Exception as e:
+        log.error(f"Request error: {e}")
         return []
 
     filings = []
-    seen = set()
-    lines = r.text.split('\n')
-    log.info(f"Index lines: {len(lines)}")
+    seen    = set()
+    lines   = r.text.split('\n')
+    log.info(f"Total lines in index: {len(lines)}")
 
     for line in lines:
+        # Fast check before parsing
         if '424B4' not in line:
             continue
-        # Fixed-width format: company(62) form(12) CIK(12) date(12) filename
         try:
-            company = line[0:62].strip()
-            form    = line[62:74].strip()
-            filed   = line[86:98].strip()
-            if form != '424B4': continue
-            if not company or company in seen: continue
-            try:
-                if date.fromisoformat(filed) < cutoff: continue
-            except: continue
-            seen.add(company)
-            filings.append({"entity_name": company, "file_date": filed})
-            log.info(f"  {company} ({filed})")
-        except: continue
+            # Fixed width: company=0:62, form=62:74, cik=74:86, date=86:98, file=98+
+            company   = line[0:62].strip()
+            form_type = line[62:74].strip()
+            filed     = line[86:98].strip()
 
-    log.info(f"Found {len(filings)} 424B4 filings in last {days_back} days")
+            if form_type != '424B4':
+                continue
+            if not company or company in seen:
+                continue
+            if len(filed) < 10:
+                continue
+
+            filed_date = date.fromisoformat(filed[:10])
+            if filed_date < cutoff:
+                continue
+
+            seen.add(company)
+            filings.append({"entity_name": company, "file_date": filed[:10]})
+            log.info(f"  Found: {company} ({filed[:10]})")
+
+        except Exception as e:
+            continue
+
+    log.info(f"424B4 filings in last {days_back} days: {len(filings)}")
     return filings
 
 def research_ticker(company_name, filing_date):
@@ -135,10 +125,10 @@ Return ONLY a JSON object, no other text:
   "skip": false,
   "skip_reason": ""
 }}
-Set skip=true if: debt offering, shelf offering, warrant, SPAC, ETF, no lockup agreement.
+Set skip=true if: debt offering, shelf offering, warrant, SPAC, ETF, mutual fund, no lockup.
 D-score: 25=active Form4 sellers,22=multiple Form4,20=early release,15=VC/PE upcoming,
 12=lockup expired selling,8=PE/VC upcoming,5=corporate parent,0=no mechanism.
-Modifier -5 to +5. insider_pct=% held by insiders. Numbers not strings for numeric fields."""
+Modifier -5 to +5. insider_pct=% held by insiders. Use numbers not strings for numeric fields."""
 
     try:
         import anthropic
@@ -152,7 +142,7 @@ Modifier -5 to +5. insider_pct=% held by insiders. Numbers not strings for numer
         s = text.find("{"); e = text.rfind("}")
         if s == -1: return None
         parsed = json.loads(text[s:e+1])
-        log.info(f"  → ticker={parsed.get('ticker')} skip={parsed.get('skip')} score_inputs: insider={parsed.get('insider_pct')} d={parsed.get('d_score')}")
+        log.info(f"  → ticker={parsed.get('ticker')} skip={parsed.get('skip')}")
         return parsed
     except Exception as e:
         log.error(f"Research error: {e}")
@@ -169,6 +159,7 @@ def log_entry(params, score, tier):
             "sec_source": params.get("sec_source",""), "sponsor": params.get("sponsor",""),
             "early_release": params.get("early_release","No"),
         }).execute()
+        log.info(f"Logged {params['ticker']}")
     except Exception as e:
         log.error(f"Supabase log error: {e}")
 
@@ -196,9 +187,7 @@ def run():
             continue
         ticker = data.get("ticker","").upper().strip()
         if not ticker or ticker in ("N/A","TBD",""): continue
-        if already_processed(ticker):
-            log.info(f"  {ticker} already in workbook")
-            continue
+        if already_processed(ticker): continue
         insider = float(data.get("insider_pct") or 0)
         score, tier = calc_score(insider, round(100-insider,2),
                                   data.get("ev_sales","NM"), data.get("ev_ebitda","NM"),
