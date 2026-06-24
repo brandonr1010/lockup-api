@@ -75,32 +75,24 @@ def fetch_recent_filings(days_back=7):
     lines   = r.text.split('\n')
     log.info(f"Total lines in index: {len(lines)}")
 
+    import re
     for line in lines:
-        # Fast check before parsing
         if '424B4' not in line:
             continue
         try:
-            # Fixed width: company=0:62, form=62:74, cik=74:86, date=86:98, file=98+
-            company   = line[0:62].strip()
-            form_type = line[62:74].strip()
-            filed     = line[86:98].strip()
-
-            if form_type != '424B4':
-                continue
-            if not company or company in seen:
-                continue
-            if len(filed) < 10:
-                continue
-
+            parts = re.split(r'\s{2,}', line.strip())
+            if len(parts) < 4: continue
+            company   = parts[0].strip()
+            form_type = parts[1].strip()
+            filed     = parts[3].strip()
+            if form_type != '424B4': continue
+            if not company or company in seen: continue
             filed_date = date.fromisoformat(filed[:10])
-            if filed_date < cutoff:
-                continue
-
+            if filed_date < cutoff: continue
             seen.add(company)
             filings.append({"entity_name": company, "file_date": filed[:10]})
             log.info(f"  Found: {company} ({filed[:10]})")
-
-        except Exception as e:
+        except:
             continue
 
     log.info(f"424B4 filings in last {days_back} days: {len(filings)}")
