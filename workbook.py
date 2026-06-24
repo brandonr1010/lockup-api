@@ -12,12 +12,8 @@ BUCKET        = "workbook"
 FILE_NAME     = "Lockup_automation2.xlsm"
 MAX_PER_RUN   = 10
 
-# SEC requires this exact format: "Name Email" — no org name
-HEADERS = {
-    "User-Agent": "Brandon Ross brandonr1010@gmail.com",
-    "Accept-Encoding": "gzip, deflate",
-    "Host": "data.sec.gov"
-}
+# SEC requires "Name Email" format exactly
+SEC_HEADERS = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -57,96 +53,75 @@ def already_processed(ticker):
     return len(res.data) > 0
 
 def fetch_recent_filings(days_back=7):
-    """Fetch recent 424B4 filings using EDGAR's data.sec.gov submissions API."""
-    log.info(f"Fetching recent 424B4 filings (last {days_back} days)...")
+    """
+    Fetch recent 424B4 filings from EDGAR daily index files.
+    These are pipe-delimited text files updated each day.
+    Format: company|form|CIK|date_filed|filename
+    """
+    log.info(f"Fetching 424B4 filings from last {days_back} days via EDGAR index...")
     
+    filings = []
+    seen = set()
     cutoff = date.today() - timedelta(days=days_back)
     
-    # Use EDGAR company search to find recent 424B4 filers
-    # data.sec.gov is the API endpoint designed for programmatic access
-    url = "https://data.sec.gov/submissions/recent.json"
-    headers = {
-        "User-Agent": "Brandon Ross brandonr1010@gmail.com",
-        "Accept-Encoding": "gzip, deflate"
-    }
-    
-    try:
-        time.sleep(0.5)  # SEC rate limit: 10 req/sec max
-        r = requests.get(url, headers=headers, timeout=30)
-        log.info(f"data.sec.gov status: {r.status_code}")
+    # Try each day's index file
+    for days_ago in range(0, days_back + 1):
+        target_date = date.today() - timedelta(days=days_ago)
         
-        if r.status_code == 200:
-            data = r.json()
-            filings = []
-            seen = set()
-            
-            recent = data.get("filings", {}).get("recent", {})
-            forms       = recent.get("form", [])
-            dates       = recent.get("filedAt", recent.get("filingDate", []))
-            companies   = recent.get("entityName", recent.get("primaryDocument", []))
-            accessions  = recent.get("accessionNumber", [])
-            
-            for i, form in enumerate(forms):
-                if form == "424B4":
-                    filed = dates[i] if i < len(dates) else ""
-                    company = companies[i] if i < len(companies) else ""
-                    try:
-                        if filed and date.fromisoformat(filed[:10]) >= cutoff:
-                            if company and company not in seen:
+        # Skip weekends
+        if target_date.weekday() >= 5:
+            continue
+        
+        year  = target_date.year
+        month = target_date.month
+        day   = target_date.day
+        
+        # EDGAR daily index URL
+        url = f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{((month-1)//3)+1}/company.idx"
+        
+        # Also try the daily file
+        url_daily = f"https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{((month-1)//3)+1}/company{target_date.strftime('%Y%m%d')}.idx"
+        
+        for idx_url in [url_daily]:
+            try:
+                time.sleep(0.15)  # SEC rate limit
+                r = requests.get(idx_url, headers=SEC_HEADERS, timeout=20)
+                log.info(f"Index {idx_url}: status={r.status_code}")
+                
+                if r.status_code != 200:
+                    continue
+                
+                # Parse the index file
+                lines = r.text.split('\n')
+                for line in lines:
+                    if '424B4' not in line:
+                        continue
+                    parts = line.strip().split('|')
+                    if len(parts) < 5:
+                        continue
+                    company = parts[0].strip()
+                    form    = parts[1].strip()
+                    filed   = parts[3].strip()
+                    
+                    if form == '424B4' and company and company not in seen:
+                        try:
+                            if date.fromisoformat(filed) >= cutoff:
                                 seen.add(company)
                                 filings.append({
                                     "entity_name": company,
-                                    "file_date": filed[:10],
-                                    "accession": accessions[i] if i < len(accessions) else ""
+                                    "file_date": filed,
                                 })
-                                log.info(f"  Found: {company} ({filed[:10]})")
-                    except: pass
-            
-            log.info(f"Found {len(filings)} 424B4 filings")
-            if filings:
-                return filings
-    except Exception as e:
-        log.error(f"data.sec.gov error: {e}")
+                                log.info(f"  Found: {company} ({filed})")
+                        except: pass
+                
+                if filings:
+                    break
+                    
+            except Exception as e:
+                log.error(f"Index fetch error for {idx_url}: {e}")
     
-    # Fallback: use EDGAR full text search with correct params
-    return fetch_via_efts(cutoff)
-
-def fetch_via_efts(cutoff):
-    """EDGAR full text search fallback."""
-    log.info("Trying EDGAR full text search...")
-    headers = {"User-Agent": "Brandon Ross brandonr1010@gmail.com"}
-    url = "https://efts.sec.gov/LATEST/search-index"
-    params = {
-        "q": '"lock-up"',
-        "forms": "424B4",
-        "dateRange": "custom",
-        "startdt": cutoff.isoformat(),
-        "enddt": date.today().isoformat(),
-        "size": "20"
-    }
-    try:
-        time.sleep(1)
-        r = requests.get(url, params=params, headers=headers, timeout=30)
-        log.info(f"EFTS status: {r.status_code} url: {r.url}")
-        if r.status_code == 200:
-            data = r.json()
-            hits = data.get("hits", {}).get("hits", [])
-            log.info(f"EFTS hits: {len(hits)}")
-            filings = []
-            seen = set()
-            for h in hits:
-                src = h.get("_source", {})
-                name = src.get("entity_name", "")
-                if name and name not in seen:
-                    seen.add(name)
-                    filings.append({"entity_name": name, "file_date": src.get("file_date", date.today().isoformat())})
-                    log.info(f"  EFTS found: {name}")
-            return filings
-        else:
-            log.error(f"EFTS error {r.status_code}: {r.text[:200]}")
-    except Exception as e:
-        log.error(f"EFTS error: {e}")
-    return []
+    log.info(f"Total 424B4 filings found: {len(filings)}")
+    return filings
 
 def research_ticker(company_name, filing_date):
     prompt = f"""You are a financial research assistant for an IPO lockup expiry short-candidate screen.
@@ -170,7 +145,7 @@ Return ONLY a JSON object with exactly these fields, no other text:
   "skip_reason": ""
 }}
 
-Set skip=true if: not a standard IPO lockup, SPAC, warrant offering, debt offering, shelf offering, or no lockup.
+Set skip=true if: not a standard IPO lockup, SPAC, warrant, debt offering, shelf offering, no lockup.
 D-score: 25=active Form4 sellers,22=multiple Form4,20=early release,15=VC/PE upcoming no selling,
 12=lockup expired selling evidence,8=PE/VC upcoming,5=corporate parent,0=no mechanism.
 Modifier -5 to +5. insider_pct=% held by insiders not yet distributed. Numbers not strings for numeric fields."""
@@ -222,7 +197,6 @@ def run():
     log.info("=== Starting lockup scan ===")
     
     filings = fetch_recent_filings(days_back=7)
-    
     if not filings:
         log.info("No filings found.")
         return
