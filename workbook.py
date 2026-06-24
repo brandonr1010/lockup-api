@@ -167,9 +167,28 @@ def run():
         log.error(f"Workbook download failed: {e}")
         return
 
+    # Pre-filter obvious non-IPO lockups before hitting Claude API
+    SKIP_KEYWORDS = [
+        'acquisition corp', 'acquisition inc', 'holdings xi', 'holdings x ',
+        'holdings ix', 'holdings viii', 'holdings vii', 'holdings vi',
+        'ventures acquisition', 'equity partners', 'capital solutions',
+        'spac', 'blank check', 'wilco', 'tianci',
+    ]
+
+    def is_likely_ipo(company_name):
+        name_lower = company_name.lower()
+        for kw in SKIP_KEYWORDS:
+            if kw in name_lower:
+                log.info(f"  Pre-filter skipped: {company_name} (matched: {kw})")
+                return False
+        return True
+
+    filtered_filings = [f for f in filings if is_likely_ipo(f["entity_name"])]
+    log.info(f"After pre-filter: {len(filtered_filings)} of {len(filings)} filings remain")
+
     candidates = []
     seen_tickers = set()
-    for f in filings[:15]:
+    for f in filtered_filings[:10]:
         log.info(f"Researching: {f['entity_name']}")
         data = research_ticker(f["entity_name"], f["file_date"])
         if not data: continue
