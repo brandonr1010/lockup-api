@@ -121,7 +121,6 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSM, nextRow, 16, f'=IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal")))')
     apply_tier(wsSM.cell(row=nextRow, column=15), tier)
     apply_tier(wsSM.cell(row=nextRow, column=16), tier)
-    wsSM.insert_rows(nextRow + 1)
 
     # Write SS
     copy_row_fmt(wsSS, 6, wsSS, nextRow, 14)
@@ -206,6 +205,19 @@ def add_name_to_workbook(file_bytes, params):
         wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
         s=rows_ss[idx]['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         apply_tier(wsSM.cell(row=r,column=15),t); apply_tier(wsSM.cell(row=r,column=16),t)
+        # Fix SM row background
+        sm_bg = TIER_ROW_BG.get(t, "FFFFFFFF")
+        for col in range(2, 15):
+            c2 = wsSM.cell(row=r, column=col)
+            if not isinstance(c2, MergedCell):
+                c2.fill = PatternFill("solid", start_color=sm_bg, end_color=sm_bg)
+
+    # Ensure SM has a blank buffer row after last data row before rubric
+    last_data_row = 5 + len(rows_sm_sorted) - 1
+    buffer_row = last_data_row + 1
+    buf_cell = wsSM.cell(row=buffer_row, column=3)
+    if not isinstance(buf_cell, MergedCell) and buf_cell.value and not str(buf_cell.value).startswith('='):
+        wsSM.insert_rows(buffer_row)
 
     # Write LV
     copy_row_fmt(wsLV,5,wsLV,nextRowLV,12)
