@@ -39,7 +39,7 @@ def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e, f=0):
     try:    cE = min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
     except: cE = 0
     C   = excel_round(cS + cE, 1)
-    F   = excel_round(max(-10, min(10, float(f))), 1)
+    F   = excel_round(max(-25, min(25, float(f))), 1)
     raw = excel_round(A + B + C + d + e + F, 1)
     score = int(excel_round(max(0, min(100, raw)), 0))
     tier  = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
@@ -117,7 +117,7 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSM, nextRow, 9, EV_SALES); safe_set(wsSM, nextRow, 10, EV_EBITDA)
     safe_set(wsSM, nextRow, 11, f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{nextRow}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{nextRow}),0)-5,0)/25*10,10),0),1)")
     safe_set(wsSM, nextRow, 12, D_SCORE); safe_set(wsSM, nextRow, 13, MODIFIER)
-    safe_set(wsSM, nextRow, 14, f"=ROUND(G{nextRow}+H{nextRow}+K{nextRow}+L{nextRow}+M{nextRow},1)")
+    safe_set(wsSM, nextRow, 14, f"=ROUND(G{nextRow}+H{nextRow}+K{nextRow}+L{nextRow}+M{nextRow}+Q{nextRow},1)")
     safe_set(wsSM, nextRow, 15, f"=MAX(0,MIN(100,ROUND(N{nextRow},0)))")
     safe_set(wsSM, nextRow, 16, f'=IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal")))')
     apply_tier(wsSM.cell(row=nextRow, column=15), tier)
@@ -209,7 +209,7 @@ def add_name_to_workbook(file_bytes, params):
         wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
         wsSM.cell(row=r,column=11).value=f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{r}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{r}),0)-5,0)/25*10,10),0),1)"
-        wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r},1)"
+        wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
         wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
         wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
         s=rows_ss[idx]['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
