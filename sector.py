@@ -188,12 +188,16 @@ def get_all_sector_scores(tickers, newsapi_key=None):
         etf = SECTOR_ETF.get(sector)
         etf_pct = etf_cache.get(etf, 0.0)
 
-        if etf_pct >= 3.0:    etf_score = 5
-        elif etf_pct >= 1.5:  etf_score = 3
-        elif etf_pct >= 0:    etf_score = 1
-        elif etf_pct >= -1.5: etf_score = -1
-        elif etf_pct >= -3.0: etf_score = -3
-        else:                 etf_score = -5
+        # FLIPPED: ETF up = sector tailwind = anti-short = negative F
+        # ETF down = sector headwind = pro-short = positive F
+        if etf_pct >= 4.0:    etf_score = -15
+        elif etf_pct >= 2.5:  etf_score = -10
+        elif etf_pct >= 1.0:  etf_score = -5
+        elif etf_pct >= 0:    etf_score = -2
+        elif etf_pct >= -1.0: etf_score = 2
+        elif etf_pct >= -2.5: etf_score = 5
+        elif etf_pct >= -4.0: etf_score = 10
+        else:                 etf_score = 15
 
         if sector not in news_cache:
             news_cache[sector] = get_news_sentiment(sector, newsapi_key)
