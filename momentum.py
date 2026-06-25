@@ -118,29 +118,17 @@ def update_momentum(file_bytes, newsapi_key=None):
     except Exception as e:
         log.warning(f"CIK batch load failed: {e}")
 
-    # Get sector scores for all tickers in batch (cached per sector ETF)
-    sector_scores = {}
+    # Get sector context (ETF + news per sector, cached). Stock momentum added per-ticker.
+    sector_context = {}
     try:
-        from sector import get_all_sector_scores, calc_sector_score
-        sector_scores = get_all_sector_scores(tickers, newsapi_key)
-        log.info(f"Sector scores computed for {len(sector_scores)} tickers")
-        for t, (fs, sec) in sector_scores.items():
-            log.info(f"  {t}: sector={sec} F={fs:+d}")
+        from sector import get_sector_context
+        sector_context = get_sector_context(tickers, newsapi_key)
+        log.info(f"Sector context computed for {len(sector_context)} sectors")
     except Exception as e:
-        log.error(f"Sector batch scoring FAILED: {type(e).__name__}: {e}")
-        # Try per-ticker fallback
-        try:
-            from sector import calc_sector_score
-            for ticker in tickers:
-                try:
-                    fs, sec = calc_sector_score(ticker, newsapi_key)
-                    sector_scores[ticker] = (fs, sec)
-                    log.info(f"  {ticker}: sector={sec} F={fs:+d} (fallback)")
-                except Exception as e2:
-                    log.warning(f"  {ticker}: sector fallback failed: {e2}")
-                    sector_scores[ticker] = (0, "Unknown")
-        except Exception as e3:
-            log.error(f"Sector fallback also failed: {e3}")
+        log.error(f"Sector context FAILED: {type(e).__name__}: {e}")
+        import traceback
+        log.error(traceback.format_exc())
+        sector_context = {}
 
     updated = 0
     for row in range(5, 200):
@@ -160,8 +148,13 @@ def update_momentum(file_bytes, newsapi_key=None):
             f4_str = get_form4_activity(cik, days_back=30)
             time.sleep(0.35)
 
-        # Sector score
-        f_score, sector = sector_scores.get(ticker, (0, "Unknown"))
+        # Compute F using stock momentum (w1/m1) + cached sector context
+        try:
+            from sector import score_ticker
+            f_score, sector, _bd = score_ticker(ticker, w1, m1, sector_context)
+        except Exception as e:
+            log.warning(f"  {ticker}: score_ticker failed: {e}")
+            f_score, sector = 0, "Unknown"
 
         # Build momentum line
         price_str = f"1W {fmt_pct(w1)} / 1M {fmt_pct(m1)}"
@@ -235,7 +228,7 @@ def _resort_after_f_update(wb):
             try: cE=min(max(float(ev_e)-5,0)/25*10,10)
             except: cE=0
             C = er(cS+cE,1)
-            F = er(max(-25,min(25,f)),1)
+            F = er(max(-30,min(30,f)),1)
             raw = er(A+B+C+d+e+F,1)
             score = int(er(max(0,min(100,raw)),0))
             tier = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"

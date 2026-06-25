@@ -39,7 +39,7 @@ def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e, f=0):
     try:    cE = min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
     except: cE = 0
     C   = excel_round(cS + cE, 1)
-    F   = excel_round(max(-25, min(25, float(f))), 1)
+    F   = excel_round(max(-30, min(30, float(f))), 1)
     raw = excel_round(A + B + C + d + e + F, 1)
     score = int(excel_round(max(0, min(100, raw)), 0))
     tier  = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
