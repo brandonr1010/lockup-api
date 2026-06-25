@@ -2,8 +2,8 @@
 Sector + Stock momentum scoring — Component F (±30 points)
 Zero Claude API cost. Uses Yahoo Finance (ETFs + stock prices) + NewsAPI (free tier).
 
-F = ETF sector momentum (±13) + Stock momentum (±13, 60% 1W / 40% 1M) + News (±4)
-Capped at ±30.
+F = ETF sector momentum (±15) + Stock momentum (±15, 60% 1W / 40% 1M)
+Capped at ±30. (News disabled — NewsAPI free tier is localhost-only.)
 
 Sign convention (high score = strong short):
   Sector ETF up   = tailwind  = anti-short = NEGATIVE
@@ -85,42 +85,42 @@ def get_etf_momentum(etf_ticker):
 
 
 def _etf_to_score(etf_pct):
-    """ETF weekly % → ±13. FLIPPED: up = anti-short = negative."""
-    if etf_pct >= 4.0:    return -13
-    elif etf_pct >= 2.5:  return -9
-    elif etf_pct >= 1.0:  return -5
+    """ETF weekly % → ±15. FLIPPED: up = anti-short = negative."""
+    if etf_pct >= 4.0:    return -15
+    elif etf_pct >= 2.5:  return -11
+    elif etf_pct >= 1.0:  return -6
     elif etf_pct >= 0:    return -2
     elif etf_pct >= -1.0: return 2
-    elif etf_pct >= -2.5: return 5
-    elif etf_pct >= -4.0: return 9
-    else:                 return 13
+    elif etf_pct >= -2.5: return 6
+    elif etf_pct >= -4.0: return 11
+    else:                 return 15
 
 
 # ─── STOCK MOMENTUM (±13, blended 60% 1W / 40% 1M) ───────────────
 def _stock_1w_to_score(w1):
-    """Stock 1-week % → ±13. FLIPPED: up = anti-short = negative."""
+    """Stock 1-week % → ±15. FLIPPED: up = anti-short = negative."""
     if w1 is None: return 0
-    if w1 >= 10:    return -13
-    elif w1 >= 6:   return -9
-    elif w1 >= 3:   return -5
+    if w1 >= 10:    return -15
+    elif w1 >= 6:   return -11
+    elif w1 >= 3:   return -6
     elif w1 >= 0:   return -2
     elif w1 >= -3:  return 2
-    elif w1 >= -6:  return 5
-    elif w1 >= -10: return 9
-    else:           return 13
+    elif w1 >= -6:  return 6
+    elif w1 >= -10: return 11
+    else:           return 15
 
 
 def _stock_1m_to_score(m1):
-    """Stock 1-month % → ±13. FLIPPED: up = anti-short = negative."""
+    """Stock 1-month % → ±15. FLIPPED: up = anti-short = negative."""
     if m1 is None: return 0
-    if m1 >= 30:    return -13
-    elif m1 >= 20:  return -9
+    if m1 >= 30:    return -15
+    elif m1 >= 20:  return -11
     elif m1 >= 10:  return -6
     elif m1 >= 0:   return -2
     elif m1 >= -10: return 2
     elif m1 >= -20: return 6
-    elif m1 >= -30: return 9
-    else:           return 13
+    elif m1 >= -30: return 11
+    else:           return 15
 
 
 def _stock_to_score(w1, m1):
@@ -137,12 +137,15 @@ def _stock_to_score(w1, m1):
     if m1 is None:
         return int(round(s_w))
     blended = 0.6 * s_w + 0.4 * s_m
-    return int(round(max(-13, min(13, blended))))
+    return int(round(max(-15, min(15, blended))))
 
 
 # ─── NEWS SENTIMENT (±4) ─────────────────────────────────────────
 def get_news_sentiment(sector, newsapi_key=None):
-    """News sentiment → ±4. FLIPPED: bullish = anti-short = negative. 0 if no key."""
+    """DISABLED: NewsAPI free tier is localhost-only, doesn't work from Railway.
+    Always returns 0. F now runs on ETF (±15) + stock momentum (±15)."""
+    return 0
+    # --- disabled below ---
     if not newsapi_key:
         return 0
     keywords = {
