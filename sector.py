@@ -1,5 +1,5 @@
 """
-Sector scoring — Component F (±10 points)
+Sector scoring — Component F (±25 points)
 Zero Claude API cost. Uses Yahoo Finance (ETFs) + NewsAPI (free tier).
 Updates daily with the scanner.
 """
@@ -127,13 +127,13 @@ def get_news_sentiment(sector, newsapi_key=None):
             bear_count += sum(1 for w in BEARISH if w in text)
 
         net = bull_count - bear_count
-        # Scale to -5 to +5
-        if net >= 8:   return 5
-        elif net >= 5: return 3
-        elif net >= 2: return 1
-        elif net <= -8: return -5
-        elif net <= -5: return -3
-        elif net <= -2: return -1
+        # Scale to -10 to +10 — FLIPPED (bullish news = bad for short = negative)
+        if net >= 8:    return -10
+        elif net >= 5:  return -6
+        elif net >= 2:  return -2
+        elif net <= -8: return 10
+        elif net <= -5: return 6
+        elif net <= -2: return 2
         else:           return 0
     except:
         return 0
@@ -152,18 +152,20 @@ def calc_sector_score(ticker, newsapi_key=None):
     etf_pct = get_etf_momentum(etf) if etf else 0.0
     time.sleep(0.3)
 
-    # ETF contribution: ±5 scaled from weekly % change
-    # >+3% = +5, +1.5 to 3% = +3, 0 to 1.5% = +1
-    # <-3% = -5, -1.5 to -3% = -3, -1.5 to 0% = -1
-    if etf_pct >= 3.0:    etf_score = 5
-    elif etf_pct >= 1.5:  etf_score = 3
-    elif etf_pct >= 0:    etf_score = 1
-    elif etf_pct >= -1.5: etf_score = -1
-    elif etf_pct >= -3.0: etf_score = -3
-    else:                 etf_score = -5
+    # ETF contribution: ±15 — FLIPPED (sector up = negative for short thesis)
+    # ETF up = sector tailwind = bearish for short = negative F
+    # ETF down = sector headwind = bullish for short = positive F
+    if etf_pct >= 4.0:    etf_score = -15
+    elif etf_pct >= 2.5:  etf_score = -10
+    elif etf_pct >= 1.0:  etf_score = -5
+    elif etf_pct >= 0:    etf_score = -2
+    elif etf_pct >= -1.0: etf_score = 2
+    elif etf_pct >= -2.5: etf_score = 5
+    elif etf_pct >= -4.0: etf_score = 10
+    else:                 etf_score = 15
 
     news_score = get_news_sentiment(sector, newsapi_key)
-    f_score = max(-10, min(10, etf_score + news_score))
+    f_score = max(-25, min(25, etf_score + news_score))
 
     log.info(f"  {ticker} sector={sector} ETF={etf}({etf_pct}%→{etf_score}) news={news_score} F={f_score}")
     return f_score, sector
@@ -197,7 +199,7 @@ def get_all_sector_scores(tickers, newsapi_key=None):
             news_cache[sector] = get_news_sentiment(sector, newsapi_key)
         news_score = news_cache.get(sector, 0)
 
-        f_score = max(-10, min(10, etf_score + news_score))
+        f_score = max(-25, min(25, etf_score + news_score))
         results[ticker] = (f_score, sector)
         log.info(f"  {ticker}: sector={sector} ETF={etf_pct}% etf_pts={etf_score} news={news_score} F={f_score}")
 

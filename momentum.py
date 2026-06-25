@@ -119,13 +119,28 @@ def update_momentum(file_bytes, newsapi_key=None):
         log.warning(f"CIK batch load failed: {e}")
 
     # Get sector scores for all tickers in batch (cached per sector ETF)
+    sector_scores = {}
     try:
-        from sector import get_all_sector_scores
+        from sector import get_all_sector_scores, calc_sector_score
         sector_scores = get_all_sector_scores(tickers, newsapi_key)
         log.info(f"Sector scores computed for {len(sector_scores)} tickers")
+        for t, (fs, sec) in sector_scores.items():
+            log.info(f"  {t}: sector={sec} F={fs:+d}")
     except Exception as e:
-        log.warning(f"Sector scoring failed: {e}")
-        sector_scores = {}
+        log.error(f"Sector batch scoring FAILED: {type(e).__name__}: {e}")
+        # Try per-ticker fallback
+        try:
+            from sector import calc_sector_score
+            for ticker in tickers:
+                try:
+                    fs, sec = calc_sector_score(ticker, newsapi_key)
+                    sector_scores[ticker] = (fs, sec)
+                    log.info(f"  {ticker}: sector={sec} F={fs:+d} (fallback)")
+                except Exception as e2:
+                    log.warning(f"  {ticker}: sector fallback failed: {e2}")
+                    sector_scores[ticker] = (0, "Unknown")
+        except Exception as e3:
+            log.error(f"Sector fallback also failed: {e3}")
 
     updated = 0
     for row in range(5, 200):
@@ -154,6 +169,14 @@ def update_momentum(file_bytes, newsapi_key=None):
         sector_part = f" | Sector ({sector}): F={'+' if f_score>=0 else ''}{f_score}"
         momentum_line = f"{MOMENTUM_TAG} {price_str}{f4_part}{sector_part}"
 
+        # Write F score to SM col 17 (Q) — feeds into Raw formula
+        sm_f_cell = wb["Scoring Model"].cell(row=row, column=17)
+        if not isinstance(sm_f_cell, MergedCell):
+            sm_f_cell.value = f_score
+            sm_f_cell.number_format = '+0;-0;0'
+            from openpyxl.styles import Alignment as Aln
+            sm_f_cell.alignment = Aln(horizontal='center')
+
         # Update thesis cell
         thesis_cell = wsSS.cell(row=row, column=14)
         if isinstance(thesis_cell, MergedCell):
@@ -164,8 +187,140 @@ def update_momentum(file_bytes, newsapi_key=None):
         updated += 1
         log.info(f"    {ticker}: {momentum_line}")
 
-    log.info(f"Momentum updated for {updated} tickers")
+    log.info(f"Momentum updated for {updated} tickers — re-sorting by updated scores...")
+
+    # Re-sort SS and SM after F scores are written
+    try:
+        _resort_after_f_update(wb)
+        log.info("Re-sort complete.")
+    except Exception as e:
+        log.error(f"Re-sort failed: {e}")
+
     out = io.BytesIO()
     wb.save(out)
     out.seek(0)
     return out.read()
+
+
+def _resort_after_f_update(wb):
+    """Re-sort Short Screen and Scoring Model by updated scores after F is written."""
+    from copy import copy as xcopy
+    from openpyxl.styles import PatternFill
+    from openpyxl.cell.cell import MergedCell as MC
+
+    wsSS = wb["Short Screen"]
+    wsSM = wb["Scoring Model"]
+
+    TIER_COLORS = {"High":"FF1F3864","Medium":"FFFF8C00","Low":"FFFFC000","Minimal":"FF92D050"}
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
+    FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400"}
+
+    def get_score_from_inputs(r):
+        """Compute score directly from SM inputs including F."""
+        import math
+        def er(val, dec=0):
+            f = 10**dec; return math.floor(val*f+0.5)/f
+        try:
+            ins = float(wsSM.cell(row=r,column=5).value or 0)
+            flt = float(wsSM.cell(row=r,column=6).value or 0)
+            ev_s = wsSM.cell(row=r,column=9).value
+            ev_e = wsSM.cell(row=r,column=10).value
+            d = float(wsSM.cell(row=r,column=12).value or 0)
+            e = float(wsSM.cell(row=r,column=13).value or 0)
+            f = float(wsSM.cell(row=r,column=17).value or 0)
+            A = er(min(ins/max(flt,0.01),5)/5*30,1)
+            B = er(min(ins/100,1)*25,1)
+            try: cS=min(float(ev_s)/5*10,10)
+            except: cS=0
+            try: cE=min(max(float(ev_e)-5,0)/25*10,10)
+            except: cE=0
+            C = er(cS+cE,1)
+            F = er(max(-25,min(25,f)),1)
+            raw = er(A+B+C+d+e+F,1)
+            score = int(er(max(0,min(100,raw)),0))
+            tier = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
+            return score, tier
+        except: return 0, "Minimal"
+
+    # Collect all rows
+    rows_ss = []; rows_sm = []
+    last_row = 5
+    while wsSS.cell(row=last_row,column=3).value: last_row+=1
+    last_row -= 1
+
+    for r in range(5, last_row+1):
+        ss_data={c:wsSS.cell(row=r,column=c).value for c in range(2,15)}
+        ss_fmt={c:wsSS.cell(row=r,column=c).number_format for c in range(2,15)}
+        ss_fill={c:xcopy(wsSS.cell(row=r,column=c).fill) for c in range(2,15)}
+        ss_font={c:xcopy(wsSS.cell(row=r,column=c).font) for c in range(2,15)}
+        score,tier=get_score_from_inputs(r)
+        rows_ss.append({'data':ss_data,'fmt':ss_fmt,'fill':ss_fill,'font':ss_font,'score':score,'tier':tier,'ticker':ss_data.get(3)})
+
+        sm_data={c:(None if isinstance(wsSM.cell(row=r,column=c),MC) else wsSM.cell(row=r,column=c).value) for c in range(2,18)}
+        sm_fmt={c:(wsSM.cell(row=r,column=c).number_format if not isinstance(wsSM.cell(row=r,column=c),MC) else '') for c in range(2,18)}
+        sm_fill={c:(xcopy(wsSM.cell(row=r,column=c).fill) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,18)}
+        sm_font={c:(xcopy(wsSM.cell(row=r,column=c).font) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,18)}
+        rows_sm.append({'data':sm_data,'fmt':sm_fmt,'fill':sm_fill,'font':sm_font,'ticker':sm_data.get(3)})
+
+    rows_ss.sort(key=lambda x:x['score'],reverse=True)
+    ticker_order=[r['ticker'] for r in rows_ss]
+    sm_by_ticker={r['ticker']:r for r in rows_sm}
+    rows_sm_sorted=[sm_by_ticker[t] for t in ticker_order if t in sm_by_ticker]
+
+    from openpyxl.styles import Font as Fnt
+    for idx,row in enumerate(rows_ss):
+        r=5+idx
+        for c in range(2,15):
+            cell=wsSS.cell(row=r,column=c)
+            cell.value=row['data'][c]; cell.number_format=row['fmt'][c]
+            cell.fill=row['fill'][c]; cell.font=row['font'][c]
+        wsSS.cell(row=r,column=2).value=f"=ROW()-4"
+        wsSS.cell(row=r,column=6).value=f"=E{r}-TODAY()"
+        wsSS.cell(row=r,column=12).value=f"='Scoring Model'!O{r}"
+        wsSS.cell(row=r,column=13).value=f"='Scoring Model'!P{r}"
+        t=row['tier']
+        sc=TIER_COLORS[t]; bg=TIER_ROW_BG[t]; fc=FONT_COLORS[t]
+        for col in [2,3,4,5,6,7,8,9,10,11,14]:
+            c2=wsSS.cell(row=r,column=col)
+            if not isinstance(c2,MC): c2.fill=PatternFill("solid",start_color=bg,end_color=bg)
+        for col in [12,13]:
+            c2=wsSS.cell(row=r,column=col)
+            if not isinstance(c2,MC):
+                c2.fill=PatternFill("solid",start_color=sc,end_color=sc)
+                c2.font=Fnt(bold=True,color=fc,name="Calibri",size=10)
+
+    for idx,row in enumerate(rows_sm_sorted):
+        r=5+idx
+        for c in range(2,18):
+            cell=wsSM.cell(row=r,column=c)
+            if isinstance(cell,MC): continue
+            cell.value=row['data'].get(c)
+            if row['fmt'].get(c): cell.number_format=row['fmt'][c]
+            if row['fill'].get(c): cell.fill=row['fill'][c]
+            if row['font'].get(c): cell.font=row['font'][c]
+        wsSM.cell(row=r,column=2).value=f"=ROW()-4"
+        wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
+        wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
+        wsSM.cell(row=r,column=11).value=f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{r}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{r}),0)-5,0)/25*10,10),0),1)"
+        wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
+        wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
+        wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
+        s,t=get_score_from_inputs(r)
+        t_str="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
+        sc=TIER_COLORS[t_str]; bg=TIER_ROW_BG[t_str]; fc=FONT_COLORS[t_str]
+        from openpyxl.styles import Font as Fnt2
+        for col in range(2,15):
+            c2=wsSM.cell(row=r,column=col)
+            if not isinstance(c2,MC): c2.fill=PatternFill("solid",start_color=bg,end_color=bg)
+        for col in [15,16]:
+            c2=wsSM.cell(row=r,column=col)
+            if not isinstance(c2,MC):
+                c2.fill=PatternFill("solid",start_color=sc,end_color=sc)
+                c2.font=Fnt2(bold=True,color=fc,name="Calibri",size=10)
+
+    # Ensure buffer row
+    last_data=5+len(rows_sm_sorted)-1
+    buf=last_data+1
+    buf_cell=wsSM.cell(row=buf,column=3)
+    if not isinstance(buf_cell,MC) and buf_cell.value and not str(buf_cell.value).startswith('='):
+        wsSM.insert_rows(buf)
