@@ -1,65 +1,66 @@
 """
 Sector scoring — Component F (±25 points)
 Zero Claude API cost. Uses Yahoo Finance (ETFs) + NewsAPI (free tier).
-Updates daily with the scanner.
+ETF up = sector tailwind = anti-short = NEGATIVE F
+ETF down = sector headwind = pro-short = POSITIVE F
+Bullish news = anti-short = NEGATIVE contribution
+Bearish news = pro-short = POSITIVE contribution
 """
 import requests, logging, time
 from datetime import date, timedelta
 
 log = logging.getLogger(__name__)
 
-# Sector ETF mapping — classify tickers manually or by keyword
 SECTOR_ETF = {
-    "Technology":       "XLK",
-    "Healthcare":       "XLV",
-    "Financials":       "XLF",
-    "Industrials":      "XLI",
-    "Consumer":         "XLY",
-    "Energy":           "XLE",
-    "Real Estate":      "XLRE",
-    "Materials":        "XLB",
-    "Utilities":        "XLU",
-    "Communications":   "XLC",
-    "Biotech":          "XBI",
-    "Software":         "IGV",
-    "Infrastructure":   "PAVE",
-    "Defense":          "ITA",
-    "Fintech":          "ARKF",
+    "Technology":     "XLK",
+    "Healthcare":     "XLV",
+    "Financials":     "XLF",
+    "Industrials":    "XLI",
+    "Consumer":       "XLY",
+    "Energy":         "XLE",
+    "Real Estate":    "XLRE",
+    "Materials":      "XLB",
+    "Utilities":      "XLU",
+    "Communications": "XLC",
+    "Biotech":        "XBI",
+    "Software":       "IGV",
+    "Infrastructure": "PAVE",
+    "Defense":        "ITA",
+    "Fintech":        "ARKF",
 }
 
-# Manual sector classifications for known tickers
 TICKER_SECTOR = {
-    "MDLN":  "Healthcare",
-    "BOBS":  "Consumer",
-    "FPS":   "Energy",
-    "GENB":  "Biotech",
-    "WLTH":  "Fintech",
-    "EQPT":  "Industrials",
-    "YSS":   "Defense",
-    "CDNL":  "Infrastructure",
-    "AGBK":  "Financials",
-    "LIFE":  "Technology",
-    "KARD":  "Fintech",
-    "AVEX":  "Biotech",
-    "PTRN":  "Consumer",
-    "AKTS":  "Technology",
-    "ANDG":  "Industrials",
-    "MMED":  "Healthcare",
-    "PICS":  "Fintech",
-    "SHAZ":  "Technology",
-    "MANE":  "Healthcare",
-    "FCBM":  "Financials",
-    "FISN":  "Industrials",
-    "BIAF":  "Biotech",
+    "MDLN": "Healthcare",
+    "BOBS": "Consumer",
+    "FPS":  "Energy",
+    "GENB": "Biotech",
+    "WLTH": "Fintech",
+    "EQPT": "Industrials",
+    "YSS":  "Defense",
+    "CDNL": "Infrastructure",
+    "AGBK": "Financials",
+    "LIFE": "Technology",
+    "KARD": "Fintech",
+    "AVEX": "Biotech",
+    "PTRN": "Consumer",
+    "AKTS": "Technology",
+    "ANDG": "Industrials",
+    "MMED": "Healthcare",
+    "PICS": "Fintech",
+    "SHAZ": "Technology",
+    "MANE": "Healthcare",
+    "FCBM": "Financials",
+    "FISN": "Industrials",
+    "BIAF": "Biotech",
 }
 
-# Sentiment keywords
 BEARISH = ["recession","downturn","decline","slump","crash","layoffs","bankruptcy",
            "losses","headwinds","slowdown","miss","disappoints","selloff","plunge",
            "warns","cuts guidance","downgrade","tariff","inflation spike"]
 BULLISH = ["surge","rally","boom","record","growth","beat","upgrade","outperform",
            "expansion","strong","momentum","breakout","raises guidance","acquisition",
            "partnership","contract win","AI","tailwind","rate cut","recovery"]
+
 
 def get_etf_momentum(etf_ticker):
     """Get 1W % change for a sector ETF via Yahoo Finance."""
@@ -74,11 +75,29 @@ def get_etf_momentum(etf_ticker):
     except:
         return 0.0
 
+
+def _etf_to_score(etf_pct):
+    """
+    Convert ETF weekly % to score contribution.
+    FLIPPED: ETF up = anti-short = negative. ETF down = pro-short = positive.
+    Max ETF contribution: ±20
+    """
+    if etf_pct >= 4.0:    return -20
+    elif etf_pct >= 2.5:  return -14
+    elif etf_pct >= 1.0:  return -7
+    elif etf_pct >= 0:    return -2
+    elif etf_pct >= -1.0: return 2
+    elif etf_pct >= -2.5: return 7
+    elif etf_pct >= -4.0: return 14
+    else:                 return 20
+
+
 def get_news_sentiment(sector, newsapi_key=None):
     """
     Get news sentiment for a sector.
-    Returns score -5 to +5.
-    Falls back to 0 if no NewsAPI key.
+    FLIPPED: bullish news = anti-short = negative. Bearish = pro-short = positive.
+    Max news contribution: ±5
+    Returns 0 if no NewsAPI key.
     """
     if not newsapi_key:
         return 0
@@ -104,9 +123,7 @@ def get_news_sentiment(sector, newsapi_key=None):
         r = requests.get(
             "https://newsapi.org/v2/everything",
             params={
-                "q": query,
-                "sortBy": "publishedAt",
-                "pageSize": 10,
+                "q": query, "sortBy": "publishedAt", "pageSize": 10,
                 "language": "en",
                 "from": (date.today() - timedelta(days=7)).isoformat(),
                 "apiKey": newsapi_key,
@@ -127,8 +144,7 @@ def get_news_sentiment(sector, newsapi_key=None):
             bear_count += sum(1 for w in BEARISH if w in text)
 
         net = bull_count - bear_count
-        # FLIPPED: bullish news = sector tailwind = anti-short = negative
-        # bearish news = sector headwind = pro-short = positive
+        # FLIPPED: bullish = negative (anti-short), bearish = positive (pro-short)
         if net >= 8:    return -5
         elif net >= 5:  return -3
         elif net >= 2:  return -1
@@ -139,11 +155,9 @@ def get_news_sentiment(sector, newsapi_key=None):
     except:
         return 0
 
+
 def calc_sector_score(ticker, newsapi_key=None):
-    """
-    Returns F score (±10) for a ticker.
-    ETF momentum (±5) + news sentiment (±5).
-    """
+    """Returns (F score ±25, sector name) for a ticker."""
     sector = TICKER_SECTOR.get(ticker.upper())
     if not sector:
         log.info(f"  No sector mapping for {ticker}, F=0")
@@ -153,28 +167,19 @@ def calc_sector_score(ticker, newsapi_key=None):
     etf_pct = get_etf_momentum(etf) if etf else 0.0
     time.sleep(0.3)
 
-    # ETF contribution: ±20 — FLIPPED (sector up = negative for short thesis)
-    # ETF up = sector tailwind = anti-short = negative F
-    # ETF down = sector headwind = pro-short = positive F
-    if etf_pct >= 4.0:    etf_score = -20
-    elif etf_pct >= 2.5:  etf_score = -14
-    elif etf_pct >= 1.0:  etf_score = -7
-    elif etf_pct >= 0:    etf_score = -2
-    elif etf_pct >= -1.0: etf_score = 2
-    elif etf_pct >= -2.5: etf_score = 7
-    elif etf_pct >= -4.0: etf_score = 14
-    else:                 etf_score = 20
-
+    etf_score = _etf_to_score(etf_pct)
     news_score = get_news_sentiment(sector, newsapi_key)
     f_score = max(-25, min(25, etf_score + news_score))
 
-    log.info(f"  {ticker} sector={sector} ETF={etf}({etf_pct}%→{etf_score}) news={news_score} F={f_score}")
+    log.info(f"  {ticker}: sector={sector} ETF={etf}({etf_pct}%→{etf_score}) news={news_score} F={f_score}")
     return f_score, sector
 
+
 def get_all_sector_scores(tickers, newsapi_key=None):
-    """Returns {ticker: (f_score, sector)} for a list of tickers."""
+    """Returns {ticker: (f_score, sector)} for a list of tickers. Caches ETF calls."""
     results = {}
-    # Cache ETF calls — one per sector, not per ticker
+
+    # Cache ETF momentum — one call per sector ETF
     etf_cache = {}
     for ticker in tickers:
         sector = TICKER_SECTOR.get(ticker.upper(), "Unknown")
@@ -183,22 +188,13 @@ def get_all_sector_scores(tickers, newsapi_key=None):
             etf_cache[etf] = get_etf_momentum(etf)
             time.sleep(0.3)
 
+    # Cache news sentiment — one call per sector
     news_cache = {}
     for ticker in tickers:
         sector = TICKER_SECTOR.get(ticker.upper(), "Unknown")
         etf = SECTOR_ETF.get(sector)
         etf_pct = etf_cache.get(etf, 0.0)
-
-        # FLIPPED: ETF up = sector tailwind = anti-short = negative F
-        # ETF down = sector headwind = pro-short = positive F
-        if etf_pct >= 4.0:    etf_score = -20
-        elif etf_pct >= 2.5:  etf_score = -14
-        elif etf_pct >= 1.0:  etf_score = -7
-        elif etf_pct >= 0:    etf_score = -2
-        elif etf_pct >= -1.0: etf_score = 2
-        elif etf_pct >= -2.5: etf_score = 7
-        elif etf_pct >= -4.0: etf_score = 14
-        else:                 etf_score = 20
+        etf_score = _etf_to_score(etf_pct)
 
         if sector not in news_cache:
             news_cache[sector] = get_news_sentiment(sector, newsapi_key)
