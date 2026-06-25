@@ -79,18 +79,30 @@ def strip_old_momentum(thesis):
         return thesis[:idx].rstrip()
     return thesis
 
-def update_momentum(file_bytes):
+def update_momentum(file_bytes, newsapi_key=None):
     """
     For each ticker in Short Screen:
     1. Pull 1W/1M price from Yahoo Finance
     2. Pull recent Form 4 count from EDGAR
-    3. Append/replace momentum line in thesis cell (col N)
+    3. Pull sector ETF momentum + news sentiment (F score)
+    4. Append/replace momentum line in thesis cell (col N)
     Returns updated file bytes.
     """
+    import os
+    if not newsapi_key:
+        newsapi_key = os.environ.get("NEWSAPI_KEY")
+
     wb = load_workbook(io.BytesIO(file_bytes), keep_vba=True)
     wsSS = wb["Short Screen"]
 
-    # Cache CIK lookup — one batch request
+    # Get all tickers first
+    tickers = []
+    for r in range(5, 200):
+        t = wsSS.cell(row=r, column=3).value
+        if not t: break
+        tickers.append(t)
+
+    # Cache CIK lookup
     cik_map = {}
     try:
         r = requests.get(
@@ -106,9 +118,18 @@ def update_momentum(file_bytes):
     except Exception as e:
         log.warning(f"CIK batch load failed: {e}")
 
+    # Get sector scores for all tickers in batch (cached per sector ETF)
+    try:
+        from sector import get_all_sector_scores
+        sector_scores = get_all_sector_scores(tickers, newsapi_key)
+        log.info(f"Sector scores computed for {len(sector_scores)} tickers")
+    except Exception as e:
+        log.warning(f"Sector scoring failed: {e}")
+        sector_scores = {}
+
     updated = 0
-    for r in range(5, 200):
-        ticker = wsSS.cell(row=r, column=3).value
+    for row in range(5, 200):
+        ticker = wsSS.cell(row=row, column=3).value
         if not ticker: break
 
         log.info(f"  Updating momentum for {ticker}")
@@ -124,13 +145,17 @@ def update_momentum(file_bytes):
             f4_str = get_form4_activity(cik, days_back=30)
             time.sleep(0.35)
 
+        # Sector score
+        f_score, sector = sector_scores.get(ticker, (0, "Unknown"))
+
         # Build momentum line
         price_str = f"1W {fmt_pct(w1)} / 1M {fmt_pct(m1)}"
         f4_part = f" | {f4_str}" if f4_str else ""
-        momentum_line = f"{MOMENTUM_TAG} {price_str}{f4_part}"
+        sector_part = f" | Sector ({sector}): F={'+' if f_score>=0 else ''}{f_score}"
+        momentum_line = f"{MOMENTUM_TAG} {price_str}{f4_part}{sector_part}"
 
         # Update thesis cell
-        thesis_cell = wsSS.cell(row=r, column=14)
+        thesis_cell = wsSS.cell(row=row, column=14)
         if isinstance(thesis_cell, MergedCell):
             continue
         old_thesis = str(thesis_cell.value) if thesis_cell.value else ""

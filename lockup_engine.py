@@ -31,7 +31,7 @@ def excel_round(val, decimals=0):
     factor = 10 ** decimals
     return math.floor(val * factor + 0.5) / factor
 
-def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
+def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e, f=0):
     A = excel_round(min(insider / max(float_pct, 0.01), 5) / 5 * 30, 1)
     B = excel_round(min(insider / 100, 1) * 25, 1)
     try:    cS = min(float(ev_sales) / 5 * 10, 10)
@@ -39,7 +39,8 @@ def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
     try:    cE = min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
     except: cE = 0
     C   = excel_round(cS + cE, 1)
-    raw = excel_round(A + B + C + d + e, 1)
+    F   = excel_round(max(-10, min(10, float(f))), 1)
+    raw = excel_round(A + B + C + d + e + F, 1)
     score = int(excel_round(max(0, min(100, raw)), 0))
     tier  = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
     return score, tier, A, B, C, raw
@@ -139,6 +140,14 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSS, nextRow, 12, f"='Scoring Model'!O{nextRow}")
     safe_set(wsSS, nextRow, 13, f"='Scoring Model'!P{nextRow}")
     safe_set(wsSS, nextRow, 14, thesis)
+    # Momentum placeholders — filled by momentum updater after add
+    for mc in [15, 16]:
+        mc_cell = wsSS.cell(row=nextRow, column=mc)
+        if not isinstance(mc_cell, MergedCell):
+            mc_cell.value = None
+            mc_cell.number_format = '+0.0%;-0.0%;0.0%'
+            from openpyxl.styles import Alignment as Aln
+            mc_cell.alignment = Aln(horizontal='center')
     apply_tier(wsSS.cell(row=nextRow, column=12), tier)
     apply_tier(wsSS.cell(row=nextRow, column=13), tier)
 

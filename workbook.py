@@ -186,11 +186,17 @@ def run():
     filtered_filings = [f for f in filings if is_likely_ipo(f["entity_name"])]
     log.info(f"After pre-filter: {len(filtered_filings)} of {len(filings)} filings remain")
 
+    MAX_CLAUDE_CALLS = 3  # hard cap to control API cost
     candidates = []
     seen_tickers = set()
+    claude_calls = 0
     for f in filtered_filings[:10]:
+        if claude_calls >= MAX_CLAUDE_CALLS:
+            log.info(f"Claude call cap ({MAX_CLAUDE_CALLS}) reached — stopping research")
+            break
         log.info(f"Researching: {f['entity_name']}")
         data = research_ticker(f["entity_name"], f["file_date"])
+        claude_calls += 1
         if not data: continue
         if data.get("skip"):
             log.info(f"  Skipped: {data.get('skip_reason')}")
