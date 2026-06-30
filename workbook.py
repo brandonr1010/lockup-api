@@ -23,10 +23,19 @@ def excel_round(val, decimals=0):
 def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
     A = excel_round(min(insider / max(float_pct, 0.01), 5) / 5 * 30, 1)
     B = excel_round(min(insider / 100, 1) * 25, 1)
-    try:    cS = min(float(ev_sales) / 5 * 10, 10)
-    except: cS = 0
-    try:    cE = min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
-    except: cE = 0
+    # Valuation Risk — NM means risk (pre-revenue/unprofitable), NOT zero
+    def _is_nm(x):
+        try:
+            float(x); return False
+        except (ValueError, TypeError):
+            return True
+    _s_nm = _is_nm(ev_sales)
+    _e_nm = _is_nm(ev_ebitda)
+    if _s_nm and _e_nm:
+        cS, cE = 15.0, 0.0   # both NM -> flat 15 valuation risk
+    else:
+        cS = 7.0 if _s_nm else min(float(ev_sales) / 5 * 10, 10)
+        cE = 7.0 if _e_nm else min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
     C   = excel_round(cS + cE, 1)
     raw = excel_round(A + B + C + d + e, 1)
     score = int(excel_round(max(0, min(100, raw)), 0))
@@ -107,8 +116,8 @@ Return ONLY a JSON object, no other text:
   "sec_source": "SEC 424B4 {filing_date}",
   "sponsor": "primary PE/VC sponsor or insider with ownership %",
   "insider_pct": 0.0,
-  "ev_sales": "NM or number",
-  "ev_ebitda": "NM or number",
+  "ev_sales": "number (compute: Enterprise Value / trailing revenue). Only 'NM' if truly pre-revenue.",
+  "ev_ebitda": "number (compute: Enterprise Value / trailing EBITDA). Only 'NM' if EBITDA is negative/zero.",
   "d_score": 0,
   "modifier": 0,
   "early_release": "No",

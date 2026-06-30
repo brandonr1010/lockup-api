@@ -34,10 +34,19 @@ def excel_round(val, decimals=0):
 def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e, f=0):
     A = excel_round(min(insider / max(float_pct, 0.01), 5) / 5 * 30, 1)
     B = excel_round(min(insider / 100, 1) * 25, 1)
-    try:    cS = min(float(ev_sales) / 5 * 10, 10)
-    except: cS = 0
-    try:    cE = min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
-    except: cE = 0
+    # Valuation Risk — NM means risk (pre-revenue/unprofitable), NOT zero
+    def _is_nm(x):
+        try:
+            float(x); return False
+        except (ValueError, TypeError):
+            return True
+    _s_nm = _is_nm(ev_sales)
+    _e_nm = _is_nm(ev_ebitda)
+    if _s_nm and _e_nm:
+        cS, cE = 15.0, 0.0   # both NM -> flat 15 valuation risk
+    else:
+        cS = 7.0 if _s_nm else min(float(ev_sales) / 5 * 10, 10)
+        cE = 7.0 if _e_nm else min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
     C   = excel_round(cS + cE, 1)
     F   = excel_round(max(-30, min(30, float(f))), 1)
     raw = excel_round(A + B + C + d + e + F, 1)
@@ -50,8 +59,18 @@ def score_from_sm_row(wsSM, row):
         e=wsSM.cell(row=row,column=5).value; f=wsSM.cell(row=row,column=6).value
         i=wsSM.cell(row=row,column=9).value; j=wsSM.cell(row=row,column=10).value
         l=wsSM.cell(row=row,column=12).value; m=wsSM.cell(row=row,column=13).value
+        n=wsSM.cell(row=row,column=14).value  # F score
         if e is None: return 0
-        score, _, _, _, _, _ = calc_score(float(e), float(f), i, j, float(l), float(m))
+        # Float (col 6) is a derived formula (=100-insider); compute directly
+        try:
+            fval = float(f)
+        except (ValueError, TypeError):
+            fval = round(100 - float(e), 2)
+        try:
+            fscore = float(n)
+        except (ValueError, TypeError):
+            fscore = 0
+        score, _, _, _, _, _ = calc_score(float(e), fval, i, j, float(l), float(m), fscore)
         return score
     except: return 0
 
@@ -111,17 +130,18 @@ def add_name_to_workbook(file_bytes, params):
     copy_row_fmt(wsSM, 6, wsSM, nextRow, 16)
     safe_set(wsSM, nextRow, 2, "=ROW()-4"); safe_set(wsSM, nextRow, 3, TICKER)
     safe_set(wsSM, nextRow, 4, COMPANY);   safe_set(wsSM, nextRow, 5, INSIDER_PCT)
-    safe_set(wsSM, nextRow, 6, float_pct)
+    safe_set(wsSM, nextRow, 6, f"=ROUND(100-E{nextRow},2)")  # derived float
     safe_set(wsSM, nextRow, 7, f"=IFERROR(ROUND(MIN(E{nextRow}/MAX(F{nextRow},0.01),5)/5*30,1),0)")
     safe_set(wsSM, nextRow, 8, f"=ROUND(MIN(E{nextRow}/100,1)*25,1)")
     safe_set(wsSM, nextRow, 9, EV_SALES); safe_set(wsSM, nextRow, 10, EV_EBITDA)
-    safe_set(wsSM, nextRow, 11, f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{nextRow}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{nextRow}),0)-5,0)/25*10,10),0),1)")
+    safe_set(wsSM, nextRow, 11, f'=ROUND(IF(AND(ISERROR(VALUE(I{nextRow})),ISERROR(VALUE(J{nextRow}))),15,IF(ISERROR(VALUE(I{nextRow})),7,MIN(VALUE(I{nextRow})/5*10,10))+IF(ISERROR(VALUE(J{nextRow})),7,MIN(MAX(VALUE(J{nextRow})-5,0)/25*10,10))),1)')
     safe_set(wsSM, nextRow, 12, D_SCORE); safe_set(wsSM, nextRow, 13, MODIFIER)
-    safe_set(wsSM, nextRow, 14, f"=ROUND(G{nextRow}+H{nextRow}+K{nextRow}+L{nextRow}+M{nextRow}+Q{nextRow},1)")
-    safe_set(wsSM, nextRow, 15, f"=MAX(0,MIN(100,ROUND(N{nextRow},0)))")
-    safe_set(wsSM, nextRow, 16, f'=IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal")))')
-    apply_tier(wsSM.cell(row=nextRow, column=15), tier)
+    safe_set(wsSM, nextRow, 14, 0)  # F score placeholder (col N) — updated daily by momentum updater
+    safe_set(wsSM, nextRow, 15, f"=ROUND(G{nextRow}+H{nextRow}+K{nextRow}+L{nextRow}+M{nextRow}+N{nextRow},1)")
+    safe_set(wsSM, nextRow, 16, f"=MAX(0,MIN(100,ROUND(O{nextRow},0)))")
+    safe_set(wsSM, nextRow, 17, f'=IF(P{nextRow}>=75,"High",IF(P{nextRow}>=50,"Medium",IF(P{nextRow}>=25,"Low","Minimal")))')
     apply_tier(wsSM.cell(row=nextRow, column=16), tier)
+    apply_tier(wsSM.cell(row=nextRow, column=17), tier)
 
     # Write SS
     copy_row_fmt(wsSS, 6, wsSS, nextRow, 14)
@@ -135,19 +155,11 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSS, nextRow, 2, "=ROW()-4"); safe_set(wsSS, nextRow, 3, TICKER)
     safe_set(wsSS, nextRow, 4, COMPANY);   safe_set(wsSS, nextRow, 5, lockup_date)
     safe_set(wsSS, nextRow, 6, f"=E{nextRow}-TODAY()"); safe_set(wsSS, nextRow, 7, prosp_date)
-    safe_set(wsSS, nextRow, 8, INSIDER_PCT); safe_set(wsSS, nextRow, 9, float_pct)
+    safe_set(wsSS, nextRow, 8, INSIDER_PCT); safe_set(wsSS, nextRow, 9, f"=ROUND(100-H{nextRow},2)")  # derived float
     safe_set(wsSS, nextRow, 10, EV_SALES);  safe_set(wsSS, nextRow, 11, EV_EBITDA)
-    safe_set(wsSS, nextRow, 12, f"='Scoring Model'!O{nextRow}")
-    safe_set(wsSS, nextRow, 13, f"='Scoring Model'!P{nextRow}")
+    safe_set(wsSS, nextRow, 12, f"='Scoring Model'!P{nextRow}")
+    safe_set(wsSS, nextRow, 13, f"='Scoring Model'!Q{nextRow}")
     safe_set(wsSS, nextRow, 14, thesis)
-    # Momentum placeholders — filled by momentum updater after add
-    for mc in [15, 16]:
-        mc_cell = wsSS.cell(row=nextRow, column=mc)
-        if not isinstance(mc_cell, MergedCell):
-            mc_cell.value = None
-            mc_cell.number_format = '+0.0%;-0.0%;0.0%'
-            from openpyxl.styles import Alignment as Aln
-            mc_cell.alignment = Aln(horizontal='center')
     apply_tier(wsSS.cell(row=nextRow, column=12), tier)
     apply_tier(wsSS.cell(row=nextRow, column=13), tier)
 
@@ -185,8 +197,8 @@ def add_name_to_workbook(file_bytes, params):
             cell.fill=row['fill'][c]; cell.font=row['font'][c]
         wsSS.cell(row=r,column=2).value=f"=ROW()-4"
         wsSS.cell(row=r,column=6).value=f"=E{r}-TODAY()"
-        wsSS.cell(row=r,column=12).value=f"='Scoring Model'!O{r}"
-        wsSS.cell(row=r,column=13).value=f"='Scoring Model'!P{r}"
+        wsSS.cell(row=r,column=12).value=f"='Scoring Model'!P{r}"
+        wsSS.cell(row=r,column=13).value=f"='Scoring Model'!Q{r}"
         s=row['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         apply_tier(wsSS.cell(row=r,column=12),t); apply_tier(wsSS.cell(row=r,column=13),t)
         # Re-apply correct row background after sort restores old fills
@@ -208,12 +220,12 @@ def add_name_to_workbook(file_bytes, params):
         wsSM.cell(row=r,column=2).value=f"=ROW()-4"
         wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
-        wsSM.cell(row=r,column=11).value=f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{r}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{r}),0)-5,0)/25*10,10),0),1)"
-        wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
-        wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
-        wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
+        wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),15,IF(ISERROR(VALUE(I{r})),7,MIN(VALUE(I{r})/5*10,10))+IF(ISERROR(VALUE(J{r})),7,MIN(MAX(VALUE(J{r})-5,0)/25*10,10))),1)'
+        wsSM.cell(row=r,column=15).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+N{r},1)"
+        wsSM.cell(row=r,column=16).value=f"=MAX(0,MIN(100,ROUND(O{r},0)))"
+        wsSM.cell(row=r,column=17).value=f'=IF(P{r}>=75,"High",IF(P{r}>=50,"Medium",IF(P{r}>=25,"Low","Minimal")))'
         s=rows_ss[idx]['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
-        apply_tier(wsSM.cell(row=r,column=15),t); apply_tier(wsSM.cell(row=r,column=16),t)
+        apply_tier(wsSM.cell(row=r,column=16),t); apply_tier(wsSM.cell(row=r,column=17),t)
         # Fix SM row background
         sm_bg = TIER_ROW_BG.get(t, "FFFFFFFF")
         for col in range(2, 15):

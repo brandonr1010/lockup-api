@@ -30,8 +30,8 @@ Your response must contain ONLY a valid JSON object — no preamble, no explanat
   "sec_source": "e.g. SEC 424B4 Jun 17 2026",
   "sponsor": "Primary PE/VC sponsor or insider seller with ownership %",
   "insider_pct": 0.0,
-  "ev_sales": "NM or number",
-  "ev_ebitda": "NM or number",
+  "ev_sales": "number (compute: Enterprise Value / trailing revenue). Only 'NM' if truly pre-revenue.",
+  "ev_ebitda": "number (compute: Enterprise Value / trailing EBITDA). Only 'NM' if EBITDA is negative/zero.",
   "d_score": 0,
   "modifier": 0,
   "early_release": "No",
@@ -40,7 +40,8 @@ Your response must contain ONLY a valid JSON object — no preamble, no explanat
 }}
 D-score: 25=active Form4 sellers,22=multiple Form4,20=early release,15=VC/PE no selling,
 12=expired selling evidence,8=PE/VC upcoming,5=corporate parent,0=no mechanism.
-Modifier -5 to +5. insider_pct=% held by insiders not yet distributed."""
+Modifier -5 to +5. insider_pct=% held by insiders not yet distributed.
+VALUATION (critical): Always attempt to compute EV/Sales and EV/EBITDA from the latest 10-Q/10-K/S-1 financials and current market cap. EV = market cap + total debt - cash. Use trailing-twelve-month revenue and EBITDA. Return an actual number whenever revenue/EBITDA exist. Return "NM" ONLY when: EV/Sales is NM only if the company has no revenue (pre-revenue); EV/EBITDA is NM only if EBITDA is negative or zero. Do NOT return NM merely because the figure is hard to find — dig into the filings. If you must return NM, the company is genuinely pre-revenue or unprofitable, which is itself a risk signal."""
 
 @app.route("/")
 def index():
