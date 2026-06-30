@@ -249,10 +249,17 @@ def _resort_after_f_update(wb):
             f = float(wsSM.cell(row=r,column=17).value or 0)
             A = er(min(ins/max(flt,0.01),5)/5*30,1)
             B = er(min(ins/100,1)*25,1)
-            try: cS=min(float(ev_s)/5*10,10)
-            except: cS=0
-            try: cE=min(max(float(ev_e)-5,0)/25*10,10)
-            except: cE=0
+            # Valuation Risk (0-20): no earnings = max (20). Must match calc_score.
+            def _nm(x):
+                try:
+                    float(x); return False
+                except (ValueError, TypeError):
+                    return True
+            if _nm(ev_s) and _nm(ev_e):
+                cS, cE = 20.0, 0.0
+            else:
+                cS = 10.0 if _nm(ev_s) else min(float(ev_s)/5*9, 9)
+                cE = 10.0 if _nm(ev_e) else min(max(float(ev_e)-5,0)/25*9, 9)
             C = er(cS+cE,1)
             F = er(max(-30,min(30,f)),1)
             raw = er(A+B+C+d+e+F,1)
@@ -320,7 +327,7 @@ def _resort_after_f_update(wb):
         wsSM.cell(row=r,column=2).value=f"=ROW()-4"
         wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
-        wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),15,IF(ISERROR(VALUE(I{r})),7,MIN(VALUE(I{r})/5*10,10))+IF(ISERROR(VALUE(J{r})),7,MIN(MAX(VALUE(J{r})-5,0)/25*10,10))),1)'
+        wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),20,IF(ISERROR(VALUE(I{r})),10,MIN(VALUE(I{r})/5*9,9))+IF(ISERROR(VALUE(J{r})),10,MIN(MAX(VALUE(J{r})-5,0)/25*9,9))),1)'
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
         wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
         wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'

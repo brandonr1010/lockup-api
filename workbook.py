@@ -23,7 +23,7 @@ def excel_round(val, decimals=0):
 def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
     A = excel_round(min(insider / max(float_pct, 0.01), 5) / 5 * 30, 1)
     B = excel_round(min(insider / 100, 1) * 25, 1)
-    # Valuation Risk — NM means risk (pre-revenue/unprofitable), NOT zero
+    # Valuation Risk (0-20): no earnings = max risk (20). NM means risk, not zero.
     def _is_nm(x):
         try:
             float(x); return False
@@ -32,10 +32,10 @@ def calc_score(insider, float_pct, ev_sales, ev_ebitda, d, e):
     _s_nm = _is_nm(ev_sales)
     _e_nm = _is_nm(ev_ebitda)
     if _s_nm and _e_nm:
-        cS, cE = 15.0, 0.0   # both NM -> flat 15 valuation risk
+        cS, cE = 20.0, 0.0
     else:
-        cS = 7.0 if _s_nm else min(float(ev_sales) / 5 * 10, 10)
-        cE = 7.0 if _e_nm else min(max(float(ev_ebitda) - 5, 0) / 25 * 10, 10)
+        cS = 10.0 if _s_nm else min(float(ev_sales) / 5 * 9, 9)
+        cE = 10.0 if _e_nm else min(max(float(ev_ebitda) - 5, 0) / 25 * 9, 9)
     C   = excel_round(cS + cE, 1)
     raw = excel_round(A + B + C + d + e, 1)
     score = int(excel_round(max(0, min(100, raw)), 0))
@@ -248,7 +248,7 @@ def run():
     # Update momentum (price + Form 4) for all tickers — free, no Claude API
     log.info("Updating momentum in thesis cells...")
     try:
-        from momentum import update_momentum
+        from movement import update_momentum
         latest = download_workbook()
         latest = update_momentum(latest)
         upload_workbook(latest)
