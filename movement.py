@@ -53,18 +53,28 @@ def get_form4_activity(cik, days_back=30):
         return None
 
 def get_price_momentum(ticker):
-    """Returns (1W_pct, 1M_pct) via Yahoo Finance."""
+    """Returns (1W_pct, 1M_pct, liq_mm) via Yahoo Finance.
+    liq_mm = 30-day average daily dollar volume in $millions."""
     try:
         import yfinance as yf
         hist = yf.Ticker(ticker).history(period="35d")
         if hist.empty or len(hist) < 2:
-            return None, None
+            return None, None, None
         cur = hist['Close'].iloc[-1]
         w1 = round((cur - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6] * 100, 1) if len(hist) >= 6 else None
         m1 = round((cur - hist['Close'].iloc[-22]) / hist['Close'].iloc[-22] * 100, 1) if len(hist) >= 22 else None
-        return w1, m1
+        # 30-day avg daily dollar volume ($MM): mean(close*volume) over last ~22 trading days
+        liq_mm = None
+        try:
+            recent = hist.tail(22)
+            dollar_vol = (recent['Close'] * recent['Volume']).mean()
+            if dollar_vol == dollar_vol:  # NaN check
+                liq_mm = round(float(dollar_vol) / 1_000_000, 1)
+        except Exception:
+            liq_mm = None
+        return w1, m1, liq_mm
     except:
-        return None, None
+        return None, None, None
 
 def fmt_pct(val):
     if val is None: return "N/A"
@@ -137,9 +147,16 @@ def update_momentum(file_bytes, newsapi_key=None):
 
         log.info(f"  Updating momentum for {ticker}")
 
-        # Price momentum
-        w1, m1 = get_price_momentum(ticker)
+        # Price momentum + liquidity
+        w1, m1, liq_mm = get_price_momentum(ticker)
         time.sleep(0.3)
+
+        # Write liquidity (30d $ADV in $MM) to Scoring Model col R (18).
+        # Gate formula in col S reads this and flags ILLIQUID if < $5MM.
+        sm_liq = wb["Scoring Model"].cell(row=row, column=18)
+        if not isinstance(sm_liq, MergedCell):
+            sm_liq.value = liq_mm  # None if unavailable -> gate shows "pending"
+            sm_liq.number_format = '#,##0.0'
 
         # Form 4 activity
         f4_str = None
@@ -230,43 +247,36 @@ def _resort_after_f_update(wb):
     wsSS = wb["Short Screen"]
     wsSM = wb["Scoring Model"]
 
-    TIER_COLORS = {"High":"FF1F3864","Medium":"FFFF8C00","Low":"FFFFC000","Minimal":"FF92D050"}
-    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
-    FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400"}
+    TIER_COLORS = {"High":"FF1F3864","Medium":"FFFF8C00","Low":"FFFFC000","Minimal":"FF92D050","ILLIQUID":"FF808080"}
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF","ILLIQUID":"FFD9D9D9"}
+    FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400","ILLIQUID":"FF808080"}
 
     def get_score_from_inputs(r):
-        """Compute score directly from SM inputs including F."""
-        import math
-        def er(val, dec=0):
-            f = 10**dec; return math.floor(val*f+0.5)/f
+        """Compute score from SM inputs via the canonical calc_score, plus liquidity gate."""
         try:
+            from lockup_engine import calc_score
             ins = float(wsSM.cell(row=r,column=5).value or 0)
-            flt = float(wsSM.cell(row=r,column=6).value or 0)
+            try:
+                flt = float(wsSM.cell(row=r,column=6).value or 0)
+            except (ValueError, TypeError):
+                flt = round(100 - ins, 2)
             ev_s = wsSM.cell(row=r,column=9).value
             ev_e = wsSM.cell(row=r,column=10).value
             d = float(wsSM.cell(row=r,column=12).value or 0)
             e = float(wsSM.cell(row=r,column=13).value or 0)
             f = float(wsSM.cell(row=r,column=17).value or 0)
-            A = er(min(ins/max(flt,0.01),5)/5*30,1)
-            B = er(min(ins/100,1)*25,1)
-            # Valuation Risk (0-20): no earnings = max (20). Must match calc_score.
-            def _nm(x):
-                try:
-                    float(x); return False
-                except (ValueError, TypeError):
-                    return True
-            if _nm(ev_s) and _nm(ev_e):
-                cS, cE = 20.0, 0.0
-            else:
-                cS = 10.0 if _nm(ev_s) else min(float(ev_s)/5*9, 9)
-                cE = 10.0 if _nm(ev_e) else min(max(float(ev_e)-5,0)/25*9, 9)
-            C = er(cS+cE,1)
-            F = er(max(-30,min(30,f)),1)
-            raw = er(A+B+C+d+e+F,1)
-            score = int(er(max(0,min(100,raw)),0))
+            score = calc_score(ins, flt, ev_s, ev_e, d, e, f)[0]
+            # Liquidity gate: <$5MM 30d ADV -> force score 0, ILLIQUID tier
+            liq = wsSM.cell(row=r,column=18).value
+            try:
+                if liq is not None and float(liq) < 5:
+                    return 0, "ILLIQUID"
+            except (ValueError, TypeError):
+                pass
             tier = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
             return score, tier
-        except: return 0, "Minimal"
+        except Exception:
+            return 0, "Minimal"
 
     # Collect all rows
     rows_ss = []; rows_sm = []
@@ -282,10 +292,10 @@ def _resort_after_f_update(wb):
         score,tier=get_score_from_inputs(r)
         rows_ss.append({'data':ss_data,'fmt':ss_fmt,'fill':ss_fill,'font':ss_font,'score':score,'tier':tier,'ticker':ss_data.get(3)})
 
-        sm_data={c:(None if isinstance(wsSM.cell(row=r,column=c),MC) else wsSM.cell(row=r,column=c).value) for c in range(2,18)}
-        sm_fmt={c:(wsSM.cell(row=r,column=c).number_format if not isinstance(wsSM.cell(row=r,column=c),MC) else '') for c in range(2,18)}
-        sm_fill={c:(xcopy(wsSM.cell(row=r,column=c).fill) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,18)}
-        sm_font={c:(xcopy(wsSM.cell(row=r,column=c).font) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,18)}
+        sm_data={c:(None if isinstance(wsSM.cell(row=r,column=c),MC) else wsSM.cell(row=r,column=c).value) for c in range(2,20)}
+        sm_fmt={c:(wsSM.cell(row=r,column=c).number_format if not isinstance(wsSM.cell(row=r,column=c),MC) else '') for c in range(2,20)}
+        sm_fill={c:(xcopy(wsSM.cell(row=r,column=c).fill) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,20)}
+        sm_font={c:(xcopy(wsSM.cell(row=r,column=c).font) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,20)}
         rows_sm.append({'data':sm_data,'fmt':sm_fmt,'fill':sm_fill,'font':sm_font,'ticker':sm_data.get(3)})
 
     rows_ss.sort(key=lambda x:x['score'],reverse=True)
@@ -317,7 +327,7 @@ def _resort_after_f_update(wb):
 
     for idx,row in enumerate(rows_sm_sorted):
         r=5+idx
-        for c in range(2,18):
+        for c in range(2,20):
             cell=wsSM.cell(row=r,column=c)
             if isinstance(cell,MC): continue
             cell.value=row['data'].get(c)
@@ -327,10 +337,11 @@ def _resort_after_f_update(wb):
         wsSM.cell(row=r,column=2).value=f"=ROW()-4"
         wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
-        wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),20,IF(ISERROR(VALUE(I{r})),10,MIN(VALUE(I{r})/5*9,9))+IF(ISERROR(VALUE(J{r})),10,MIN(MAX(VALUE(J{r})-5,0)/25*9,9))),1)'
+        wsSM.cell(row=r,column=11).value=f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{r}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{r}),0)-5,0)/25*10,10),0),1)"
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
-        wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
-        wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
+        wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
+        wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
+        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=5,"PASS","ILLIQUID"))'
         s,t=get_score_from_inputs(r)
         t_str="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         sc=TIER_COLORS[t_str]; bg=TIER_ROW_BG[t_str]; fc=FONT_COLORS[t_str]

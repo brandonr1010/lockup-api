@@ -5,8 +5,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
 from openpyxl.cell.cell import MergedCell
 
-TIER_COLORS = {"High":"FF1F3864","Medium":"FFFF8C00","Low":"FFFFC000","Minimal":"FF92D050"}
-FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400"}
+TIER_COLORS = {"High":"FF1F3864","Medium":"FFFF8C00","Low":"FFFFC000","Minimal":"FF92D050","ILLIQUID":"FF808080"}
+FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400","ILLIQUID":"FF808080"}
 
 def apply_tier(cell, t):
     if t not in TIER_COLORS: t = "Minimal"
@@ -71,6 +71,13 @@ def score_from_sm_row(wsSM, row):
         except (ValueError, TypeError):
             fscore = 0
         score, _, _, _, _, _ = calc_score(float(e), fval, i, j, float(l), float(m), fscore)
+        # Liquidity gate: <$5MM -> score 0 (sorts to bottom)
+        liq = wsSM.cell(row=row, column=18).value
+        try:
+            if liq is not None and float(liq) < 5:
+                return 0
+        except (ValueError, TypeError):
+            pass
         return score
     except: return 0
 
@@ -137,16 +144,18 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSM, nextRow, 11, f'=ROUND(IF(AND(ISERROR(VALUE(I{nextRow})),ISERROR(VALUE(J{nextRow}))),20,IF(ISERROR(VALUE(I{nextRow})),10,MIN(VALUE(I{nextRow})/5*9,9))+IF(ISERROR(VALUE(J{nextRow})),10,MIN(MAX(VALUE(J{nextRow})-5,0)/25*9,9))),1)')
     safe_set(wsSM, nextRow, 12, D_SCORE); safe_set(wsSM, nextRow, 13, MODIFIER)
     safe_set(wsSM, nextRow, 14, f"=ROUND(G{nextRow}+H{nextRow}+K{nextRow}+L{nextRow}+M{nextRow}+Q{nextRow},1)")  # Raw (col N) includes F from Q
-    safe_set(wsSM, nextRow, 15, f"=MAX(0,MIN(100,ROUND(N{nextRow},0)))")  # Final Score (col O)
-    safe_set(wsSM, nextRow, 16, f'=IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal")))')  # Tier (col P)
+    safe_set(wsSM, nextRow, 15, f'=IF(S{nextRow}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{nextRow},0))))')  # Final Score (col O)
+    safe_set(wsSM, nextRow, 16, f'=IF(S{nextRow}="ILLIQUID","ILLIQUID",IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal"))))')  # Tier (col P)
     safe_set(wsSM, nextRow, 17, 0)  # F score placeholder (col Q) — updated daily by momentum updater
+    safe_set(wsSM, nextRow, 18, None)  # Liquidity (col R) — populated by daily scan
+    safe_set(wsSM, nextRow, 19, f'=IF(R{nextRow}="","pending",IF(R{nextRow}>=5,"PASS","ILLIQUID"))')  # Liq gate (col S)
     apply_tier(wsSM.cell(row=nextRow, column=15), tier)
     apply_tier(wsSM.cell(row=nextRow, column=16), tier)
 
     # Write SS
     copy_row_fmt(wsSS, 6, wsSS, nextRow, 14)
     # Clear row background — only score/tier cols get tier color; row fill depends on tier
-    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF","ILLIQUID":"FFD9D9D9"}
     row_bg = TIER_ROW_BG.get(tier, "FFFFFFFF")
     for col in [2,3,4,5,6,7,8,9,10,11,14]:
         c = wsSS.cell(row=nextRow, column=col)
@@ -176,7 +185,7 @@ def add_name_to_workbook(file_bytes, params):
     rows_sm = []
     for r in range(5, last_row + 1):
         row_data={}; row_fmt={}; row_fill={}; row_font={}
-        for c in range(2,18):
+        for c in range(2,20):
             cell = wsSM.cell(row=r,column=c)
             if isinstance(cell,MergedCell): row_data[c]=None; continue
             row_data[c]=cell.value; row_fmt[c]=cell.number_format
@@ -188,7 +197,7 @@ def add_name_to_workbook(file_bytes, params):
     sm_by_ticker = {r['ticker']: r for r in rows_sm}
     rows_sm_sorted = [sm_by_ticker[t] for t in ticker_order if t in sm_by_ticker]
 
-    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF"}
+    TIER_ROW_BG = {"High":"FF1F3864","Medium":"FFFFEB9C","Low":"FFFFFFFF","Minimal":"FFFFFFFF","ILLIQUID":"FFD9D9D9"}
     for idx, row in enumerate(rows_ss):
         r = 5 + idx
         for c in range(2,15):
@@ -210,7 +219,7 @@ def add_name_to_workbook(file_bytes, params):
 
     for idx, row in enumerate(rows_sm_sorted):
         r = 5 + idx
-        for c in range(2,18):
+        for c in range(2,20):
             cell=wsSM.cell(row=r,column=c)
             if isinstance(cell,MergedCell): continue
             cell.value=row['data'].get(c)
@@ -222,8 +231,9 @@ def add_name_to_workbook(file_bytes, params):
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
         wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),20,IF(ISERROR(VALUE(I{r})),10,MIN(VALUE(I{r})/5*9,9))+IF(ISERROR(VALUE(J{r})),10,MIN(MAX(VALUE(J{r})-5,0)/25*9,9))),1)'
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
-        wsSM.cell(row=r,column=15).value=f"=MAX(0,MIN(100,ROUND(N{r},0)))"
-        wsSM.cell(row=r,column=16).value=f'=IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal")))'
+        wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
+        wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
+        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=5,"PASS","ILLIQUID"))'
         s=rows_ss[idx]['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         apply_tier(wsSM.cell(row=r,column=15),t); apply_tier(wsSM.cell(row=r,column=16),t)
         # Fix SM row background
