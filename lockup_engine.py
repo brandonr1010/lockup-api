@@ -74,7 +74,7 @@ def score_from_sm_row(wsSM, row):
         # Liquidity gate: <$5MM -> score 0 (sorts to bottom)
         liq = wsSM.cell(row=row, column=18).value
         try:
-            if liq is not None and float(liq) < 5:
+            if liq is not None and float(liq) < 10:
                 return 0
         except (ValueError, TypeError):
             pass
@@ -148,7 +148,7 @@ def add_name_to_workbook(file_bytes, params):
     safe_set(wsSM, nextRow, 16, f'=IF(S{nextRow}="ILLIQUID","ILLIQUID",IF(O{nextRow}>=75,"High",IF(O{nextRow}>=50,"Medium",IF(O{nextRow}>=25,"Low","Minimal"))))')  # Tier (col P)
     safe_set(wsSM, nextRow, 17, 0)  # F score placeholder (col Q) — updated daily by momentum updater
     safe_set(wsSM, nextRow, 18, None)  # Liquidity (col R) — populated by daily scan
-    safe_set(wsSM, nextRow, 19, f'=IF(R{nextRow}="","pending",IF(R{nextRow}>=5,"PASS","ILLIQUID"))')  # Liq gate (col S)
+    safe_set(wsSM, nextRow, 19, f'=IF(R{nextRow}="","pending",IF(R{nextRow}>=10,"PASS","ILLIQUID"))')  # Liq gate (col S)
     apply_tier(wsSM.cell(row=nextRow, column=15), tier)
     apply_tier(wsSM.cell(row=nextRow, column=16), tier)
 
@@ -233,7 +233,7 @@ def add_name_to_workbook(file_bytes, params):
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
         wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
         wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
-        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=5,"PASS","ILLIQUID"))'
+        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=10,"PASS","ILLIQUID"))'
         s=rows_ss[idx]['score']; t="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         apply_tier(wsSM.cell(row=r,column=15),t); apply_tier(wsSM.cell(row=r,column=16),t)
         # Fix SM row background

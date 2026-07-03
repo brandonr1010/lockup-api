@@ -54,22 +54,28 @@ def get_form4_activity(cik, days_back=30):
 
 def get_price_momentum(ticker):
     """Returns (1W_pct, 1M_pct, liq_mm) via Yahoo Finance.
-    liq_mm = 30-day average daily dollar volume in $millions."""
+    liq_mm = avg daily dollar volume in $millions over available days (up to 30d).
+    Uses whatever trading history exists so newly-listed IPOs still get a real
+    liquidity figure from day 1, rather than showing blank/pending."""
     try:
         import yfinance as yf
         hist = yf.Ticker(ticker).history(period="35d")
-        if hist.empty or len(hist) < 2:
+        if hist.empty:
             return None, None, None
         cur = hist['Close'].iloc[-1]
         w1 = round((cur - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6] * 100, 1) if len(hist) >= 6 else None
         m1 = round((cur - hist['Close'].iloc[-22]) / hist['Close'].iloc[-22] * 100, 1) if len(hist) >= 22 else None
-        # 30-day avg daily dollar volume ($MM): mean(close*volume) over last ~22 trading days
+        # Avg daily dollar volume ($MM): mean(close*volume) over available days (<=22).
+        # Computed even for 1-day-old IPOs so the liquidity gate has a real number.
         liq_mm = None
         try:
             recent = hist.tail(22)
-            dollar_vol = (recent['Close'] * recent['Volume']).mean()
-            if dollar_vol == dollar_vol:  # NaN check
-                liq_mm = round(float(dollar_vol) / 1_000_000, 1)
+            dv = (recent['Close'] * recent['Volume'])
+            dv = dv[dv > 0]  # drop any zero/blank volume days
+            if len(dv) > 0:
+                mean_dv = dv.mean()
+                if mean_dv == mean_dv and mean_dv > 0:  # NaN/zero check
+                    liq_mm = round(float(mean_dv) / 1_000_000, 1)
         except Exception:
             liq_mm = None
         return w1, m1, liq_mm
@@ -269,7 +275,7 @@ def _resort_after_f_update(wb):
             # Liquidity gate: <$5MM 30d ADV -> force score 0, ILLIQUID tier
             liq = wsSM.cell(row=r,column=18).value
             try:
-                if liq is not None and float(liq) < 5:
+                if liq is not None and float(liq) < 10:
                     return 0, "ILLIQUID"
             except (ValueError, TypeError):
                 pass
@@ -341,7 +347,7 @@ def _resort_after_f_update(wb):
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
         wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
         wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
-        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=5,"PASS","ILLIQUID"))'
+        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=10,"PASS","ILLIQUID"))'
         s,t=get_score_from_inputs(r)
         t_str="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
         sc=TIER_COLORS[t_str]; bg=TIER_ROW_BG[t_str]; fc=FONT_COLORS[t_str]
