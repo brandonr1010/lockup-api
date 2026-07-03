@@ -258,7 +258,9 @@ def _resort_after_f_update(wb):
     FONT_COLORS = {"High":"FFFFFFFF","Medium":"FF006400","Low":"FF006400","Minimal":"FF006400","ILLIQUID":"FF808080"}
 
     def get_score_from_inputs(r):
-        """Compute score from SM inputs via the canonical calc_score, plus liquidity gate."""
+        """Returns (display_score, tier, sort_key).
+        sort_key sorts DESC and guarantees: liquid names above illiquid; among
+        floored-0 liquid names, order by uncapped raw score (insider signal)."""
         try:
             from lockup_engine import calc_score
             ins = float(wsSM.cell(row=r,column=5).value or 0)
@@ -272,17 +274,25 @@ def _resort_after_f_update(wb):
             e = float(wsSM.cell(row=r,column=13).value or 0)
             f = float(wsSM.cell(row=r,column=17).value or 0)
             score = calc_score(ins, flt, ev_s, ev_e, d, e, f)[0]
-            # Liquidity gate: <$5MM 30d ADV -> force score 0, ILLIQUID tier
+            # Uncapped raw for tiebreaking among floored-0 liquid names
+            A = min(ins/max(flt,0.01),5)/5*30
+            B = min(ins/100,1)*25
+            raw_uncapped = A + B + d + e + f  # rough ordering proxy, can be negative
             liq = wsSM.cell(row=r,column=18).value
+            is_illiquid = False
             try:
                 if liq is not None and float(liq) < 10:
-                    return 0, "ILLIQUID"
+                    is_illiquid = True
             except (ValueError, TypeError):
-                pass
+                is_illiquid = False
+            if is_illiquid:
+                # liquid_flag=0 sorts below all liquid (flag=1); ordered among themselves by raw
+                return 0, "ILLIQUID", (0, raw_uncapped)
             tier = "High" if score>=75 else "Medium" if score>=50 else "Low" if score>=25 else "Minimal"
-            return score, tier
+            # liquid_flag=1; primary by capped score, secondary by raw (breaks 0-0 ties)
+            return score, tier, (1, score, raw_uncapped)
         except Exception:
-            return 0, "Minimal"
+            return 0, "Minimal", (1, 0, -999.0)
 
     # Collect all rows
     rows_ss = []; rows_sm = []
@@ -295,8 +305,8 @@ def _resort_after_f_update(wb):
         ss_fmt={c:wsSS.cell(row=r,column=c).number_format for c in range(2,15)}
         ss_fill={c:xcopy(wsSS.cell(row=r,column=c).fill) for c in range(2,15)}
         ss_font={c:xcopy(wsSS.cell(row=r,column=c).font) for c in range(2,15)}
-        score,tier=get_score_from_inputs(r)
-        rows_ss.append({'data':ss_data,'fmt':ss_fmt,'fill':ss_fill,'font':ss_font,'score':score,'tier':tier,'ticker':ss_data.get(3)})
+        score,tier,sort_key=get_score_from_inputs(r)
+        rows_ss.append({'data':ss_data,'fmt':ss_fmt,'fill':ss_fill,'font':ss_font,'score':score,'tier':tier,'sort_key':sort_key,'ticker':ss_data.get(3)})
 
         sm_data={c:(None if isinstance(wsSM.cell(row=r,column=c),MC) else wsSM.cell(row=r,column=c).value) for c in range(2,20)}
         sm_fmt={c:(wsSM.cell(row=r,column=c).number_format if not isinstance(wsSM.cell(row=r,column=c),MC) else '') for c in range(2,20)}
@@ -304,7 +314,7 @@ def _resort_after_f_update(wb):
         sm_font={c:(xcopy(wsSM.cell(row=r,column=c).font) if not isinstance(wsSM.cell(row=r,column=c),MC) else None) for c in range(2,20)}
         rows_sm.append({'data':sm_data,'fmt':sm_fmt,'fill':sm_fill,'font':sm_font,'ticker':sm_data.get(3)})
 
-    rows_ss.sort(key=lambda x:x['score'],reverse=True)
+    rows_ss.sort(key=lambda x:x['sort_key'],reverse=True)
     ticker_order=[r['ticker'] for r in rows_ss]
     sm_by_ticker={r['ticker']:r for r in rows_sm}
     rows_sm_sorted=[sm_by_ticker[t] for t in ticker_order if t in sm_by_ticker]
@@ -348,8 +358,8 @@ def _resort_after_f_update(wb):
         wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
         wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
         wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=10,"PASS","ILLIQUID"))'
-        s,t=get_score_from_inputs(r)
-        t_str="High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal"
+        s,t,_sk=get_score_from_inputs(r)
+        t_str=t if t in TIER_COLORS else ("High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal")
         sc=TIER_COLORS[t_str]; bg=TIER_ROW_BG[t_str]; fc=FONT_COLORS[t_str]
         from openpyxl.styles import Font as Fnt2
         for col in range(2,15):
@@ -450,9 +460,25 @@ def _build_daily_movers(wb, current_state, prior_state):
         if not tk: break
         company[tk]=wsSS.cell(row=r,column=4).value or ""
 
-    # Compute rank changes (only names present in both prior and current)
+    # Build set of ILLIQUID tickers (voided) — excluded from movers entirely.
+    # Read liquidity from Scoring Model col R; <$10MM = illiquid.
+    wsSM_m=wb["Scoring Model"]
+    illiquid_tickers=set()
+    for r in range(5,200):
+        tk=wsSM_m.cell(row=r,column=3).value
+        if not tk: break
+        liq=wsSM_m.cell(row=r,column=18).value
+        try:
+            if liq is not None and float(liq) < 10:
+                illiquid_tickers.add(tk)
+        except (ValueError, TypeError):
+            pass
+
+    # Compute rank changes (only names present in both prior and current, excluding illiquid)
     movers=[]
     for tk, cur_rank in current_state:
+        if tk in illiquid_tickers:
+            continue  # voided/illiquid names never appear as movers
         if tk in prior_state:
             change = prior_state[tk] - cur_rank  # + = climbed toward #1
             if change != 0:
