@@ -326,10 +326,11 @@ def _resort_after_f_update(wb):
             cell=wsSS.cell(row=r,column=c)
             cell.value=row['data'][c]; cell.number_format=row['fmt'][c]
             cell.fill=row['fill'][c]; cell.font=row['font'][c]
-        wsSS.cell(row=r,column=2).value=f"=ROW()-4"
+        wsSS.cell(row=r,column=2).value=r-4
         wsSS.cell(row=r,column=6).value=f"=E{r}-TODAY()"
-        wsSS.cell(row=r,column=12).value=f"='Scoring Model'!O{r}"
-        wsSS.cell(row=r,column=13).value=f"='Scoring Model'!P{r}"
+        # Score/tier as computed values (display in any viewer, no recalc needed)
+        wsSS.cell(row=r,column=12).value=row['score']
+        wsSS.cell(row=r,column=13).value=row['tier']
         t=row['tier']
         sc=TIER_COLORS[t]; bg=TIER_ROW_BG[t]; fc=FONT_COLORS[t]
         for col in [2,3,4,5,6,7,8,9,10,11,14]:
@@ -350,16 +351,36 @@ def _resort_after_f_update(wb):
             if row['fmt'].get(c): cell.number_format=row['fmt'][c]
             if row['fill'].get(c): cell.fill=row['fill'][c]
             if row['font'].get(c): cell.font=row['font'][c]
-        wsSM.cell(row=r,column=2).value=f"=ROW()-4"
+        # Rank as computed value (not formula) so it displays without recalc
+        wsSM.cell(row=r,column=2).value=r-4
+        # Input-driven components: keep as formulas (Excel recalcs from inputs)
         wsSM.cell(row=r,column=7).value=f"=IFERROR(ROUND(MIN(E{r}/MAX(F{r},0.01),5)/5*30,1),0)"
         wsSM.cell(row=r,column=8).value=f"=ROUND(MIN(E{r}/100,1)*25,1)"
-        wsSM.cell(row=r,column=11).value=f"=ROUND(IFERROR(MIN(IFERROR(VALUE(I{r}),0)/5*10,10),0)+IFERROR(MIN(MAX(IFERROR(VALUE(J{r}),0)-5,0)/25*10,10),0),1)"
+        # C (valuation) — NM=20 scale, matches calc_score
+        wsSM.cell(row=r,column=11).value=f'=ROUND(IF(AND(ISERROR(VALUE(I{r})),ISERROR(VALUE(J{r}))),20,IF(ISERROR(VALUE(I{r})),10,MIN(VALUE(I{r})/5*9,9))+IF(ISERROR(VALUE(J{r})),10,MIN(MAX(VALUE(J{r})-5,0)/25*9,9))),1)'
         wsSM.cell(row=r,column=14).value=f"=ROUND(G{r}+H{r}+K{r}+L{r}+M{r}+Q{r},1)"
-        wsSM.cell(row=r,column=15).value=f'=IF(S{r}="ILLIQUID",0,MAX(0,MIN(100,ROUND(N{r},0))))'
-        wsSM.cell(row=r,column=16).value=f'=IF(S{r}="ILLIQUID","ILLIQUID",IF(O{r}>=75,"High",IF(O{r}>=50,"Medium",IF(O{r}>=25,"Low","Minimal"))))'
-        wsSM.cell(row=r,column=19).value=f'=IF(R{r}="","pending",IF(R{r}>=10,"PASS","ILLIQUID"))'
+        # Compute score/tier/gate in Python and write as VALUES (display correctly in any viewer)
         s,t,_sk=get_score_from_inputs(r)
-        t_str=t if t in TIER_COLORS else ("High" if s>=75 else "Medium" if s>=50 else "Low" if s>=25 else "Minimal")
+        liq_val=wsSM.cell(row=r,column=18).value
+        # Gate value
+        if liq_val is None or liq_val=="":
+            gate_val="pending"
+        else:
+            try:
+                gate_val="PASS" if float(liq_val)>=10 else "ILLIQUID"
+            except (ValueError,TypeError):
+                gate_val="pending"
+        wsSM.cell(row=r,column=19).value=gate_val
+        # Score value (0 if illiquid)
+        score_val=0 if gate_val=="ILLIQUID" else s
+        wsSM.cell(row=r,column=15).value=score_val
+        # Tier value
+        if gate_val=="ILLIQUID":
+            tier_val="ILLIQUID"
+        else:
+            tier_val="High" if score_val>=75 else "Medium" if score_val>=50 else "Low" if score_val>=25 else "Minimal"
+        wsSM.cell(row=r,column=16).value=tier_val
+        t_str=tier_val if tier_val in TIER_COLORS else "Minimal"
         sc=TIER_COLORS[t_str]; bg=TIER_ROW_BG[t_str]; fc=FONT_COLORS[t_str]
         from openpyxl.styles import Font as Fnt2
         for col in range(2,15):
