@@ -198,6 +198,27 @@ def run():
     MAX_CLAUDE_CALLS = 3  # hard cap to control API cost
     candidates = []
     seen_tickers = set()
+
+    # Robust dedup: seed with tickers ALREADY in the workbook (source of truth),
+    # not just the lockup_entries table. Prevents re-adding a name (e.g. FPS, CDNL)
+    # when the table and workbook drift out of sync.
+    try:
+        from openpyxl import load_workbook as _lwb
+        from openpyxl.cell.cell import MergedCell as _MC
+        _wbchk = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+        _wsSM = _wbchk["Scoring Model"]
+        for _r in range(5, 300):
+            _c = _wsSM.cell(row=_r, column=3)
+            if isinstance(_c, _MC):
+                continue
+            _tk = _c.value
+            if not _tk:
+                break
+            seen_tickers.add(str(_tk).upper().strip())
+        log.info(f"Dedup seeded with {len(seen_tickers)} existing workbook tickers")
+    except Exception as e:
+        log.error(f"Could not seed dedup from workbook: {e}")
+
     claude_calls = 0
     for f in filtered_filings[:10]:
         if claude_calls >= MAX_CLAUDE_CALLS:
