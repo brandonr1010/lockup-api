@@ -175,20 +175,27 @@ def get_workbook_tickers(file_bytes):
     return out
 
 def reconcile_table_to_workbook(file_bytes):
-    """Backfill names that were logged to lockup_entries but never landed in the
-    workbook (e.g. add/upload failed mid-run). Uses the already-researched row
-    data — no new Claude API calls. Returns (file_bytes, n_backfilled)."""
+    """Backfill ONLY explicitly listed names that were logged to lockup_entries
+    but never landed in the workbook. The table is append-only history — it also
+    holds names deliberately deleted from the workbook (old duplicates, skips),
+    so a blanket table-vs-workbook diff would re-add junk. Newest row per ticker
+    wins. Returns (file_bytes, n_backfilled)."""
+    BACKFILL_TICKERS = {"BLSM", "ATTO", "APMD", "CISS", "AGCC"}
     wb_tickers = get_workbook_tickers(file_bytes)
-    res = supabase.table("lockup_entries").select("*").execute()
-    orphans = [row for row in (res.data or [])
-               if str(row.get("ticker", "")).upper().strip() not in wb_tickers]
-    if not orphans:
+    todo = BACKFILL_TICKERS - wb_tickers
+    if not todo:
         return file_bytes, 0
-    log.info(f"Reconcile: {len(orphans)} table entries missing from workbook: "
-             f"{[o['ticker'] for o in orphans]}")
+    res = supabase.table("lockup_entries").select("*") \
+        .order("created_at", desc=True).execute()
+    latest = {}
+    for row in (res.data or []):
+        t = str(row.get("ticker", "")).upper().strip()
+        if t in todo and t not in latest:
+            latest[t] = row
+    log.info(f"Reconcile: backfilling {sorted(latest.keys())}")
     from lockup_engine import add_name_to_workbook
     n = 0
-    for row in orphans:
+    for t, row in latest.items():
         params = {
             "ticker": row["ticker"], "company": row["company"],
             "prospectus_date": row["prospectus_date"], "lockup_days": row["lockup_days"],
@@ -294,6 +301,55 @@ def sync_historical_backtest(file_bytes):
     wb.save(out)
     log.info(f"Historical Backtest synced: {len(universe)} rows")
     return out.getvalue()
+
+LIQ_GATE_MM = 5.0  # $MM 30-day avg dollar volume; matches Scoring Model header "≥$5MM"
+
+def resolve_liquidity_gate(file_bytes):
+    """Force every Scoring Model liquidity gate (col S) to PASS or FAIL — never
+    'pending'. If ADV (col R) is blank, retry via yfinance on whatever trading
+    days exist; if still no data, FAIL (unverifiable liquidity = untradeable
+    for a short screen)."""
+    from openpyxl import load_workbook as _lwb
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    ws = wb["Scoring Model"]
+    changed = 0
+    for r in range(5, 300):
+        t = ws.cell(row=r, column=3).value
+        if not t:
+            break
+        adv = ws.cell(row=r, column=18).value  # R
+        if adv is None or str(adv).strip() == "":
+            adv = _fetch_adv_mm(str(t).strip())
+            if adv is not None:
+                ws.cell(row=r, column=18).value = round(adv, 1)
+        gate_cell = ws.cell(row=r, column=19)  # S
+        try:
+            gate = "PASS" if float(adv) >= LIQ_GATE_MM else "FAIL"
+        except (TypeError, ValueError):
+            gate = "FAIL"  # no data obtainable
+        if gate_cell.value != gate:
+            gate_cell.value = gate
+            changed += 1
+            log.info(f"  Liq gate {t}: ADV={adv} -> {gate}")
+    out = io.BytesIO()
+    wb.save(out)
+    log.info(f"Liquidity gate resolved: {changed} cells updated")
+    return out.getvalue()
+
+def _fetch_adv_mm(ticker):
+    """30-day (or available-days) average daily dollar volume in $MM, or None."""
+    try:
+        import yfinance as yf
+        h = yf.Ticker(ticker).history(period="35d")
+        if h is None or h.empty:
+            return None
+        dv = (h["Close"] * h["Volume"]).dropna()
+        if len(dv) == 0:
+            return None
+        return float(dv.tail(30).mean()) / 1e6
+    except Exception as e:
+        log.error(f"  ADV fetch failed for {ticker}: {e}")
+        return None
 
 def run():
     log.info("=== Starting lockup scan ===")
@@ -417,6 +473,7 @@ def run():
     try:
         latest = download_workbook()
         latest = sync_historical_backtest(latest)
+        latest = resolve_liquidity_gate(latest)
         upload_workbook(latest)
     except Exception as e:
         log.error(f"Historical Backtest sync failed: {e}")
