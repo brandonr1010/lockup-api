@@ -554,6 +554,74 @@ def enforce_universe_rules(file_bytes):
     return file_bytes
 
 
+def update_backtest_prices(file_bytes):
+    """Write actual T-1/T+1/T+5/T+10 closes and % changes as VALUES into
+    Historical Backtest for names whose lockup has passed. Uses the real
+    trading calendar from yfinance (WORKDAY() misses market holidays, and
+    STOCKHISTORY needs a live Excel 365 feed). Future dates stay blank."""
+    from openpyxl import load_workbook as _lwb
+    import datetime as _dt
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    hb = wb["Historical Backtest"]
+    today = date.today()
+    filled = 0
+    for r in range(12, 200):
+        t = hb.cell(row=r, column=2).value
+        if not t:
+            continue
+        t = str(t).strip()
+        if t.startswith(("NOTE", "SECTION")):
+            continue
+        d = hb.cell(row=r, column=4).value
+        if not d:
+            continue
+        exp = d.date() if isinstance(d, _dt.datetime) else d
+        if exp > today:
+            continue
+        try:
+            import yfinance as yf
+            h = yf.Ticker(t).history(start=exp - timedelta(days=15),
+                                     end=exp + timedelta(days=25))
+            if h is None or h.empty:
+                continue
+            closes = h["Close"]
+            days = [d2.date() for d2 in closes.index]
+            before = [i for i, d2 in enumerate(days) if d2 < exp]
+            after  = [i for i, d2 in enumerate(days) if d2 > exp]
+            if not before:
+                continue
+            p = {"G": float(closes.iloc[before[-1]])}
+            for col, k in (("H", 1), ("I", 5), ("J", 10)):
+                if len(after) >= k and days[after[k-1]] <= today:
+                    p[col] = float(closes.iloc[after[k-1]])
+            for col, v in p.items():
+                cell = hb[f"{col}{r}"]
+                cell.value = round(v, 2)
+                cell.number_format = "$#,##0.00"
+            for col, ref in (("K", "H"), ("L", "I"), ("M", "J")):
+                cell = hb[f"{col}{r}"]
+                if ref in p:
+                    cell.value = round(p[ref] / p["G"] - 1, 4)
+                    cell.number_format = "0.0%"
+                else:
+                    cell.value = None
+            # date helpers: real trading dates as formatted values (no serials)
+            helper = {"N": days[before[-1]]}
+            for col, k in (("O", 1), ("P", 5), ("Q", 10)):
+                if len(after) >= k:
+                    helper[col] = days[after[k-1]]
+            for col, dv in helper.items():
+                cell = hb[f"{col}{r}"]
+                cell.value = dv
+                cell.number_format = "dd-mmm-yyyy"
+            filled += 1
+        except Exception as e:
+            log.error(f"  Backtest price fill failed for {t}: {e}")
+    out = io.BytesIO()
+    wb.save(out)
+    log.info(f"Backtest prices filled for {filled} expired names")
+    return out.getvalue()
+
 def run():
     log.info("=== Starting lockup scan ===")
 
@@ -681,6 +749,7 @@ def run():
         latest = download_workbook()
         latest = enforce_universe_rules(latest)
         latest = sync_historical_backtest(latest)
+        latest = update_backtest_prices(latest)
         latest = resolve_liquidity_gate(latest)
         upload_workbook(latest)
     except Exception as e:
