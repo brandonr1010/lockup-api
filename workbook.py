@@ -351,6 +351,209 @@ def _fetch_adv_mm(ticker):
         log.error(f"  ADV fetch failed for {ticker}: {e}")
         return None
 
+# ── Universe rules: exchange + market cap ────────────────────────────────────
+ALLOWED_EXCHANGES = {
+    "NYQ": "NYSE", "NMS": "Nasdaq", "NGM": "Nasdaq", "NCM": "Nasdaq",
+    "TOR": "TSX",
+}
+MIN_MCAP_USD = 500e6  # $500M floor — names below are benched, not shown
+
+_profile_cache = {}
+
+def _get_profile(ticker):
+    """(exchange_code, market_cap_usd) via yfinance; (None, None) if unavailable."""
+    t = str(ticker).upper().strip()
+    if t in _profile_cache:
+        return _profile_cache[t]
+    exch, mcap = None, None
+    try:
+        import yfinance as yf
+        info = yf.Ticker(t).info or {}
+        exch = info.get("exchange")
+        mcap = info.get("marketCap")
+        if mcap is None:
+            p, so = info.get("regularMarketPrice"), info.get("sharesOutstanding")
+            if p and so:
+                mcap = p * so
+    except Exception as e:
+        log.error(f"  Profile fetch failed for {t}: {e}")
+    _profile_cache[t] = (exch, mcap)
+    return exch, mcap
+
+def qualifies(ticker):
+    """(bool, reason). Fails on non-NYSE/Nasdaq/TSX exchange, mcap < $500M,
+    or missing data (benched until data appears — new IPOs re-check daily)."""
+    exch, mcap = _get_profile(ticker)
+    if exch is None and mcap is None:
+        return False, "no exchange/mcap data yet"
+    if exch not in ALLOWED_EXCHANGES:
+        return False, f"exchange {exch} not NYSE/Nasdaq/TSX"
+    if mcap is None:
+        return False, "no market cap data yet"
+    if mcap < MIN_MCAP_USD:
+        return False, f"mcap ${mcap/1e6:,.0f}M < $500M"
+    return True, f"{ALLOWED_EXCHANGES[exch]} ${mcap/1e9:,.1f}B"
+
+import re as _re
+
+def _rewrite_row_refs(formula, new_row):
+    """Rewrite every single-cell row reference in a self-row formula to new_row."""
+    return _re.sub(r"([A-Z]{1,2})\d+(?![0-9])", lambda m: f"{m.group(1)}{new_row}", formula)
+
+def enforce_universe_rules(file_bytes):
+    """Remove non-qualifying and duplicate tickers from all display sheets,
+    park them on hidden _bench, and promote benched names that now qualify
+    (re-added from lockup_entries via lockup_engine). Rewrites self-row
+    formulas and ranks after row deletion. Returns file_bytes."""
+    from openpyxl import load_workbook as _lwb
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    ss, sm = wb["Short Screen"], wb["Scoring Model"]
+
+    # current universe from Scoring Model
+    tickers, seen = [], set()
+    dupes = set()
+    for r in range(5, 300):
+        t = sm.cell(row=r, column=3).value
+        if not t:
+            break
+        t = str(t).upper().strip()
+        if t in seen:
+            dupes.add(t)
+        seen.add(t)
+        tickers.append(t)
+
+    verdicts = {t: qualifies(t) for t in set(tickers)}
+    drop = {t for t, (ok, _) in verdicts.items() if not ok}
+    for t in sorted(set(tickers)):
+        ok, reason = verdicts[t]
+        log.info(f"  Universe {t}: {'KEEP' if ok else 'BENCH'} ({reason})")
+    if dupes:
+        log.info(f"  Duplicates to collapse: {sorted(dupes)}")
+
+    # ---- bench sheet
+    if "_bench" not in wb.sheetnames:
+        b = wb.create_sheet("_bench")
+        b.sheet_state = "hidden"
+        b["A1"], b["B1"], b["C1"] = "ticker", "benched_at", "reason"
+    bench = wb["_bench"]
+    benched_now = {str(bench.cell(row=r, column=1).value).upper().strip()
+                   for r in range(2, 300) if bench.cell(row=r, column=1).value}
+
+    # ---- delete rows for dropped/duplicate tickers, sheet by sheet
+    def _is_ticker(v):
+        s = str(v or "").strip()
+        return 1 <= len(s) <= 6 and s == s.upper() and " " not in s and s.isascii() and any(ch.isalpha() for ch in s)
+
+    def purge(ws, tick_col, start=5):
+        # find last TICKER row (rubric/doc text below the table must not count)
+        # so blank spacer rows mid-table don't truncate the scan
+        last = 0
+        for rr in range(start, ws.max_row + 1):
+            if _is_ticker(ws.cell(row=rr, column=tick_col).value):
+                last = rr
+        removed, kept_seen = 0, set()
+        r = start
+        while r <= last:
+            t = ws.cell(row=r, column=tick_col).value
+            if not _is_ticker(t):
+                ws.delete_rows(r, 1)   # compact blank spacer
+                last -= 1
+                removed += 1
+                continue
+            t = str(t).upper().strip()
+            if t in drop or t in kept_seen:
+                ws.delete_rows(r, 1)
+                last -= 1
+                removed += 1
+                continue
+            kept_seen.add(t)
+            r += 1
+        return removed
+
+    purge(ss, 3); purge(sm, 3)
+    if "Lockup Verification" in wb.sheetnames:
+        purge(wb["Lockup Verification"], 2)
+    if "Sources" in wb.sheetnames:
+        srcs = wb["Sources"]
+        r = 5
+        while r <= srcs.max_row:
+            t = srcs.cell(row=r, column=2).value
+            if t and str(t).upper().strip() in drop:
+                srcs.delete_rows(r, 1)
+                continue
+            r += 1
+
+    # ---- rewrite self-row formulas + ranks (openpyxl does not adjust formula
+    #      text on delete_rows)
+    for r in range(5, 300):
+        if not _is_ticker(ss.cell(row=r, column=3).value):
+            break
+        ss.cell(row=r, column=2).value = r - 4          # rank
+        f = ss.cell(row=r, column=6).value               # Days to Lockup
+        if isinstance(f, str) and f.startswith("="):
+            ss.cell(row=r, column=6).value = f"=E{r}-TODAY()"
+    for r in range(5, 300):
+        if not _is_ticker(sm.cell(row=r, column=3).value):
+            break
+        sm.cell(row=r, column=2).value = r - 4
+        for c in (7, 8, 11, 14):                         # G,H,K,N
+            f = sm.cell(row=r, column=c).value
+            if isinstance(f, str) and f.startswith("="):
+                sm.cell(row=r, column=c).value = _rewrite_row_refs(f, r)
+    if "Lockup Verification" in wb.sheetnames:
+        lv = wb["Lockup Verification"]
+        for r in range(5, 300):
+            if not lv.cell(row=r, column=2).value:
+                break
+            f = lv.cell(row=r, column=7).value           # Status
+            if isinstance(f, str) and f.startswith("="):
+                lv.cell(row=r, column=7).value = _rewrite_row_refs(f, r)
+
+    # ---- record newly benched
+    next_b = 2
+    while bench.cell(row=next_b, column=1).value:
+        next_b += 1
+    for t in sorted(drop - benched_now):
+        bench.cell(row=next_b, column=1).value = t
+        bench.cell(row=next_b, column=2).value = date.today().isoformat()
+        bench.cell(row=next_b, column=3).value = verdicts[t][1]
+        next_b += 1
+
+    out = io.BytesIO()
+    wb.save(out)
+    file_bytes = out.getvalue()
+    log.info(f"Universe enforced: {len(drop)} benched, dupes collapsed: {sorted(dupes) or 'none'}")
+
+    # ---- promotion: benched names that now qualify, with data in lockup_entries
+    wb_tickers = get_workbook_tickers(file_bytes)
+    promote = [t for t in benched_now
+               if t not in wb_tickers and t not in drop and qualifies(t)[0]]
+    if promote:
+        try:
+            res = supabase.table("lockup_entries").select("*")                 .order("created_at", desc=True).execute()
+            latest = {}
+            for row in (res.data or []):
+                t = str(row.get("ticker", "")).upper().strip()
+                if t in promote and t not in latest:
+                    latest[t] = row
+            from lockup_engine import add_name_to_workbook
+            for t, row in latest.items():
+                params = {k: row[k] for k in ("ticker", "company", "prospectus_date",
+                          "lockup_days", "insider_pct", "ev_sales", "ev_ebitda",
+                          "d_score", "modifier")}
+                params.update(sec_source=row.get("sec_source", ""),
+                              sponsor=row.get("sponsor", ""),
+                              early_release=row.get("early_release", "No"))
+                try:
+                    file_bytes, s, ti, _ = add_name_to_workbook(file_bytes, params)
+                    log.info(f"  Promoted {t} from bench (score {s})")
+                except Exception as e:
+                    log.error(f"  Promotion failed for {t}: {e}")
+        except Exception as e:
+            log.error(f"Promotion lookup failed: {e}")
+    return file_bytes
+
+
 def run():
     log.info("=== Starting lockup scan ===")
 
@@ -431,6 +634,10 @@ def run():
         # truth for what's in the workbook. seen_tickers (workbook-seeded)
         # already handles dedup; a table row without a workbook row is an
         # orphan handled by reconcile_table_to_workbook().
+        ok, reason = qualifies(ticker)
+        if not ok:
+            log.info(f"  {ticker} fails universe rules ({reason}) — benched, not added")
+            continue
         insider = float(data.get("insider_pct") or 0)
         score, tier = calc_score(insider, round(100-insider,2),
                                   data.get("ev_sales","NM"), data.get("ev_ebitda","NM"),
@@ -472,6 +679,7 @@ def run():
     # formulas, contiguous rows, no merged-cell corruption).
     try:
         latest = download_workbook()
+        latest = enforce_universe_rules(latest)
         latest = sync_historical_backtest(latest)
         latest = resolve_liquidity_gate(latest)
         upload_workbook(latest)
