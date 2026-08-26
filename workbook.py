@@ -51,10 +51,6 @@ def upload_workbook(file_bytes):
         {"content-type": "application/vnd.ms-excel.sheet.macroEnabled.12", "upsert": "true"}
     )
 
-def already_processed(ticker):
-    res = supabase.table("lockup_entries").select("ticker").eq("ticker", ticker).execute()
-    return len(res.data) > 0
-
 def fetch_recent_filings(days_back=7):
     today  = date.today()
     qtr    = (today.month - 1) // 3 + 1
@@ -162,6 +158,143 @@ def log_entry(params, score, tier):
     except Exception as e:
         log.error(f"Supabase log error: {e}")
 
+def get_workbook_tickers(file_bytes):
+    """Tickers currently in the workbook (Scoring Model = source of truth)."""
+    from openpyxl import load_workbook as _lwb
+    from openpyxl.cell.cell import MergedCell as _MC
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    ws = wb["Scoring Model"]
+    out = set()
+    for r in range(5, 300):
+        c = ws.cell(row=r, column=3)
+        if isinstance(c, _MC):
+            continue
+        if not c.value:
+            break
+        out.add(str(c.value).upper().strip())
+    return out
+
+def reconcile_table_to_workbook(file_bytes):
+    """Backfill names that were logged to lockup_entries but never landed in the
+    workbook (e.g. add/upload failed mid-run). Uses the already-researched row
+    data — no new Claude API calls. Returns (file_bytes, n_backfilled)."""
+    wb_tickers = get_workbook_tickers(file_bytes)
+    res = supabase.table("lockup_entries").select("*").execute()
+    orphans = [row for row in (res.data or [])
+               if str(row.get("ticker", "")).upper().strip() not in wb_tickers]
+    if not orphans:
+        return file_bytes, 0
+    log.info(f"Reconcile: {len(orphans)} table entries missing from workbook: "
+             f"{[o['ticker'] for o in orphans]}")
+    from lockup_engine import add_name_to_workbook
+    n = 0
+    for row in orphans:
+        params = {
+            "ticker": row["ticker"], "company": row["company"],
+            "prospectus_date": row["prospectus_date"], "lockup_days": row["lockup_days"],
+            "insider_pct": row["insider_pct"], "ev_sales": row["ev_sales"],
+            "ev_ebitda": row["ev_ebitda"], "d_score": row["d_score"],
+            "modifier": row["modifier"], "sec_source": row.get("sec_source", ""),
+            "sponsor": row.get("sponsor", ""), "early_release": row.get("early_release", "No"),
+        }
+        try:
+            file_bytes, score, tier, days_out = add_name_to_workbook(file_bytes, params)
+            n += 1
+            log.info(f"  Backfilled {row['ticker']} (score {score}, {tier})")
+        except Exception as e:
+            log.error(f"  Backfill failed for {row['ticker']}: {e}")
+    return file_bytes, n
+
+def sync_historical_backtest(file_bytes):
+    """Rebuild Historical Backtest Section 2 from the Short Screen every run:
+    one contiguous row per ticker, all formulas self-row referenced. Prevents
+    the row-drift / missing-formula corruption from recurring."""
+    from openpyxl import load_workbook as _lwb
+    from openpyxl.styles import Font, Alignment
+    from copy import copy
+
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    hb, ss = wb["Historical Backtest"], wb["Short Screen"]
+
+    # kill any stray merges inside the data area (caused the PTRN/KARD corruption)
+    for m in [m for m in list(hb.merged_cells.ranges) if m.min_row >= 12]:
+        hb.unmerge_cells(str(m))
+
+    # preserve existing static data (sponsor text is richest here)
+    existing = {}
+    for r in range(12, 200):
+        t = hb.cell(row=r, column=2).value
+        if not t:
+            continue
+        t = str(t).strip()
+        if t.startswith(("NOTE", "SECTION")):
+            continue
+        existing[t] = {"company": hb.cell(row=r, column=3).value,
+                       "date": hb.cell(row=r, column=4).value,
+                       "sponsor": hb.cell(row=r, column=5).value,
+                       "float": hb.cell(row=r, column=6).value}
+
+    # sponsor fallback from lockup_entries
+    sponsors = {}
+    try:
+        res = supabase.table("lockup_entries").select("ticker,sponsor").execute()
+        sponsors = {str(x["ticker"]).upper(): x.get("sponsor") for x in (res.data or [])}
+    except Exception as e:
+        log.error(f"Sponsor lookup failed: {e}")
+
+    universe = []
+    for r in range(5, 300):
+        t = ss.cell(row=r, column=3).value
+        if not t:
+            break
+        universe.append({"ticker": str(t).strip(),
+                         "company": ss.cell(row=r, column=4).value,
+                         "lockup": ss.cell(row=r, column=5).value,
+                         "float": ss.cell(row=r, column=9).value,
+                         "thesis": ss.cell(row=r, column=14).value or ""})
+
+    tpl  = {c: copy(hb.cell(row=12, column=c)._style) for c in range(2, 18)}
+    tfmt = {c: hb.cell(row=12, column=c).number_format for c in range(2, 18)}
+
+    for r in range(12, 12 + max(len(universe), len(existing)) + 20):
+        for c in range(2, 18):
+            hb.cell(row=r, column=c).value = None
+
+    r = 12
+    for u in universe:
+        ex = existing.get(u["ticker"], {})
+        sp = (ex.get("sponsor") or sponsors.get(u["ticker"].upper())
+              or u["thesis"][:80].strip())
+        vals = {2: u["ticker"], 3: ex.get("company") or u["company"],
+                4: ex.get("date") or u["lockup"], 5: sp,
+                6: ex.get("float") if ex.get("float") is not None else u["float"],
+                7: f'=IFERROR(_xlfn.SINGLE(_xlfn.STOCKHISTORY("{u["ticker"]}",N{r},N{r},0,0,1)),"")',
+                8: f'=IFERROR(_xlfn.SINGLE(_xlfn.STOCKHISTORY("{u["ticker"]}",O{r},O{r},0,0,1)),"")',
+                9: f'=IFERROR(_xlfn.SINGLE(_xlfn.STOCKHISTORY("{u["ticker"]}",P{r},P{r},0,0,1)),"")',
+                10: f'=IFERROR(_xlfn.SINGLE(_xlfn.STOCKHISTORY("{u["ticker"]}",Q{r},Q{r},0,0,1)),"")',
+                11: f'=IFERROR(H{r}/G{r}-1,"")', 12: f'=IFERROR(I{r}/G{r}-1,"")',
+                13: f'=IFERROR(J{r}/G{r}-1,"")',
+                14: f'=WORKDAY(D{r},-1)', 15: f'=WORKDAY(D{r},1)',
+                16: f'=WORKDAY(D{r},5)', 17: f'=WORKDAY(D{r},10)'}
+        for c, v in vals.items():
+            cell = hb.cell(row=r, column=c)
+            cell.value = v
+            cell._style = copy(tpl[c])
+            cell.number_format = tfmt[c]
+        r += 1
+
+    nc = hb.cell(row=r + 1, column=2)
+    nc.value = ("NOTE: STOCKHISTORY() requires Excel 365 with an active market data feed. "
+                "Price cells auto-populate once the lockup date passes; % Chg columns compute "
+                "from T-1 close. Rows sync automatically from the Short Screen on every scan.")
+    nc.font = Font(italic=True, color="FF808080", size=9, name="Calibri")
+    nc.alignment = Alignment(horizontal="left")
+
+    out = io.BytesIO()
+    wb.save(out)
+    log.info(f"Historical Backtest synced: {len(universe)} rows")
+    return out.getvalue()
+
 def run():
     log.info("=== Starting lockup scan ===")
 
@@ -200,24 +333,25 @@ def run():
     seen_tickers = set()
 
     # Robust dedup: seed with tickers ALREADY in the workbook (source of truth),
-    # not just the lockup_entries table. Prevents re-adding a name (e.g. FPS, CDNL)
-    # when the table and workbook drift out of sync.
+    # not the lockup_entries table. The table can contain names that never landed
+    # in the workbook (failed add/upload) — those must remain eligible so the
+    # reconcile step can backfill them.
     try:
-        from openpyxl import load_workbook as _lwb
-        from openpyxl.cell.cell import MergedCell as _MC
-        _wbchk = _lwb(io.BytesIO(file_bytes), keep_vba=True)
-        _wsSM = _wbchk["Scoring Model"]
-        for _r in range(5, 300):
-            _c = _wsSM.cell(row=_r, column=3)
-            if isinstance(_c, _MC):
-                continue
-            _tk = _c.value
-            if not _tk:
-                break
-            seen_tickers.add(str(_tk).upper().strip())
+        seen_tickers |= get_workbook_tickers(file_bytes)
         log.info(f"Dedup seeded with {len(seen_tickers)} existing workbook tickers")
     except Exception as e:
         log.error(f"Could not seed dedup from workbook: {e}")
+
+    # Backfill any table entries missing from the workbook (uses stored research,
+    # zero Claude calls). Fixes orphans like BLSM/ATTO/APMD/CISS/AGCC.
+    try:
+        file_bytes, backfilled = reconcile_table_to_workbook(file_bytes)
+        if backfilled:
+            seen_tickers |= get_workbook_tickers(file_bytes)
+            upload_workbook(file_bytes)
+            log.info(f"Reconcile: {backfilled} names backfilled and uploaded")
+    except Exception as e:
+        log.error(f"Reconcile failed: {e}")
 
     claude_calls = 0
     for f in filtered_filings[:10]:
@@ -237,9 +371,10 @@ def run():
             log.info(f"  {ticker} duplicate this run, skipping")
             continue
         seen_tickers.add(ticker)
-        if already_processed(ticker):
-            log.info(f"  {ticker} already in workbook")
-            continue
+        # NOTE: no lockup_entries check here — the table is NOT the source of
+        # truth for what's in the workbook. seen_tickers (workbook-seeded)
+        # already handles dedup; a table row without a workbook row is an
+        # orphan handled by reconcile_table_to_workbook().
         insider = float(data.get("insider_pct") or 0)
         score, tier = calc_score(insider, round(100-insider,2),
                                   data.get("ev_sales","NM"), data.get("ev_ebitda","NM"),
@@ -276,5 +411,14 @@ def run():
         log.info("Momentum update complete.")
     except Exception as e:
         log.error(f"Momentum update failed: {e}")
+
+    # Keep Historical Backtest in lockstep with the Short Screen (self-row
+    # formulas, contiguous rows, no merged-cell corruption).
+    try:
+        latest = download_workbook()
+        latest = sync_historical_backtest(latest)
+        upload_workbook(latest)
+    except Exception as e:
+        log.error(f"Historical Backtest sync failed: {e}")
 
     log.info(f"=== Done. {added} names added. ===")
