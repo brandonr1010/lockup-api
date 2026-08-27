@@ -483,31 +483,33 @@ def enforce_universe_rules(file_bytes):
                 continue
             r += 1
 
-    # ---- rewrite self-row formulas + ranks (openpyxl does not adjust formula
-    #      text on delete_rows)
-    for r in range(5, 300):
-        if not _is_ticker(ss.cell(row=r, column=3).value):
-            break
-        ss.cell(row=r, column=2).value = r - 4          # rank
-        f = ss.cell(row=r, column=6).value               # Days to Lockup
-        if isinstance(f, str) and f.startswith("="):
-            ss.cell(row=r, column=6).value = f"=E{r}-TODAY()"
-    for r in range(5, 300):
-        if not _is_ticker(sm.cell(row=r, column=3).value):
-            break
-        sm.cell(row=r, column=2).value = r - 4
-        for c in (7, 8, 11, 14):                         # G,H,K,N
-            f = sm.cell(row=r, column=c).value
-            if isinstance(f, str) and f.startswith("="):
-                sm.cell(row=r, column=c).value = _rewrite_row_refs(f, r)
-    if "Lockup Verification" in wb.sheetnames:
-        lv = wb["Lockup Verification"]
+    # ---- rewrite EVERY formula cell's row refs + ranks (openpyxl does not
+    #      adjust formula text on delete_rows; O/P and any future formula
+    #      columns must shift too — fixed columns caused the v44 score bug)
+    def fix_rows(ws, tick_col, rank=True):
         for r in range(5, 300):
-            if not lv.cell(row=r, column=2).value:
+            if not _is_ticker(ws.cell(row=r, column=tick_col).value):
                 break
-            f = lv.cell(row=r, column=7).value           # Status
-            if isinstance(f, str) and f.startswith("="):
-                lv.cell(row=r, column=7).value = _rewrite_row_refs(f, r)
+            if rank:
+                ws.cell(row=r, column=2).value = r - 4
+            for c in range(2, ws.max_column + 1):
+                f = ws.cell(row=r, column=c).value
+                if isinstance(f, str) and f.startswith("="):
+                    ws.cell(row=r, column=c).value = _rewrite_row_refs(f, r)
+    fix_rows(ss, 3)
+    fix_rows(sm, 3)
+    if "Lockup Verification" in wb.sheetnames:
+        fix_rows(wb["Lockup Verification"], 2, rank=False)
+    # ---- purge benched tickers from _movers_state (stale rows create ghost movers)
+    if "_movers_state" in wb.sheetnames:
+        ms = wb["_movers_state"]
+        r = 2
+        while r <= ms.max_row:
+            t = ms.cell(row=r, column=1).value
+            if t and str(t).upper().strip() in drop:
+                ms.delete_rows(r, 1)
+                continue
+            r += 1
 
     # ---- record newly benched
     next_b = 2
@@ -620,6 +622,52 @@ def update_backtest_prices(file_bytes):
     out = io.BytesIO()
     wb.save(out)
     log.info(f"Backtest prices filled for {filled} expired names")
+    return out.getvalue()
+
+def sync_sources(file_bytes):
+    """Ensure every Short Screen ticker has at least one Sources row (Lockup
+    Date, Tier 1, from lockup_entries sec_source + EDGAR link). Automation-added
+    names historically skipped Sources (lockup_engine gap)."""
+    from openpyxl import load_workbook as _lwb
+    from openpyxl.styles import Font
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    if "Sources" not in wb.sheetnames:
+        return file_bytes
+    ss, srcs = wb["Short Screen"], wb["Sources"]
+    have = {str(srcs.cell(row=r, column=2).value).strip()
+            for r in range(5, srcs.max_row + 1) if srcs.cell(row=r, column=2).value}
+    screen = []
+    for r in range(5, 300):
+        t = ss.cell(row=r, column=3).value
+        if not t:
+            break
+        screen.append((str(t).strip(), ss.cell(row=r, column=4).value))
+    missing = [(t, c) for t, c in screen if t not in have]
+    if not missing:
+        return file_bytes
+    meta = {}
+    try:
+        res = supabase.table("lockup_entries").select("ticker,sec_source")             .order("created_at", desc=True).execute()
+        for row in (res.data or []):
+            meta.setdefault(str(row["ticker"]).upper().strip(), row.get("sec_source") or "")
+    except Exception as e:
+        log.error(f"sec_source lookup failed: {e}")
+    nr = srcs.max_row + 1
+    for t, company in missing:
+        sec = meta.get(t.upper(), "") or "SEC 424B4 (see EDGAR)"
+        vals = {2: t, 3: company, 4: "Lockup Date", 5: sec, 6: "Tier 1",
+                7: date.today().strftime("%b %Y"),
+                8: "Auto-added by scanner; verify clause page in filing",
+                9: f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={t}&type=424B4",
+                10: "Current — Tier 1 SEC prospectus"}
+        for c, v in vals.items():
+            cell = srcs.cell(row=nr, column=c)
+            cell.value = v
+            cell.font = Font(name="Calibri", size=10)
+        nr += 1
+    out = io.BytesIO()
+    wb.save(out)
+    log.info(f"Sources rows added for {[t for t, _ in missing]}")
     return out.getvalue()
 
 def run():
@@ -748,6 +796,7 @@ def run():
     try:
         latest = download_workbook()
         latest = enforce_universe_rules(latest)
+        latest = sync_sources(latest)
         latest = sync_historical_backtest(latest)
         latest = update_backtest_prices(latest)
         latest = resolve_liquidity_gate(latest)
