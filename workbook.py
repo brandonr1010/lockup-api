@@ -182,7 +182,19 @@ def reconcile_table_to_workbook(file_bytes):
     wins. Returns (file_bytes, n_backfilled)."""
     BACKFILL_TICKERS = {"BLSM", "ATTO", "APMD", "CISS", "AGCC"}
     wb_tickers = get_workbook_tickers(file_bytes)
-    todo = BACKFILL_TICKERS - wb_tickers
+    # benched names stay benched — re-adding them just makes enforcement
+    # re-bench every run (the CISS/AGCC churn)
+    benched = set()
+    try:
+        from openpyxl import load_workbook as _lwb
+        _wbb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+        if "_bench" in _wbb.sheetnames:
+            _b = _wbb["_bench"]
+            benched = {str(_b.cell(row=r, column=1).value).upper().strip()
+                       for r in range(2, 300) if _b.cell(row=r, column=1).value}
+    except Exception as e:
+        log.error(f"bench read failed: {e}")
+    todo = BACKFILL_TICKERS - wb_tickers - benched
     if not todo:
         return file_bytes, 0
     res = supabase.table("lockup_entries").select("*") \
@@ -728,6 +740,16 @@ def finalize_scores(file_bytes):
         Q  = float(sm.cell(row=r, column=17).value or 0)
         S  = sm.cell(row=r, column=19).value
         thesis = str(ss.cell(row=r, column=14).value or "")
+        # movement.py writes F into the thesis line but not reliably into the
+        # F column — parse the freshest momentum F and persist it to Q
+        if "Momentum update:" in thesis and "nan%" not in thesis:
+            m = _re2.findall(r"Sector \([^)]*\): F=([+-]?\d+)", thesis)
+            if m:
+                parsed = float(m[-1])
+                if parsed != Q:
+                    log.info(f"  Momentum F persisted {t}: Q {Q:+.0f} -> {parsed:+.0f} (from thesis)")
+                    sm.cell(row=r, column=17).value = parsed
+                    Q = parsed
         if "nan%" in thesis and Q != 0:
             log.info(f"  Momentum sanitized {t}: F {Q:+.0f} -> 0 (no price data)")
             sm.cell(row=r, column=17).value = 0
