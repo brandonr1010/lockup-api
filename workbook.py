@@ -336,11 +336,28 @@ def resolve_liquidity_gate(file_bytes):
     log.info(f"Liquidity gate resolved: {changed} cells updated")
     return out.getvalue()
 
+_px_cache = {}
+
+def _get_history(ticker, days=60):
+    """One throttled yfinance history per ticker per run (Yahoo rate limits —
+    the Aug 27 run returned nan for every ticker after call volume spiked)."""
+    t = str(ticker).upper().strip()
+    if t in _px_cache:
+        return _px_cache[t]
+    try:
+        import yfinance as yf
+        time.sleep(0.4)
+        h = yf.Ticker(t).history(period=f"{days}d")
+    except Exception as e:
+        log.error(f"  history fetch failed {t}: {e}")
+        h = None
+    _px_cache[t] = h
+    return h
+
 def _fetch_adv_mm(ticker):
     """30-day (or available-days) average daily dollar volume in $MM, or None."""
     try:
-        import yfinance as yf
-        h = yf.Ticker(ticker).history(period="35d")
+        h = _get_history(ticker)
         if h is None or h.empty:
             return None
         dv = (h["Close"] * h["Volume"]).dropna()
@@ -582,8 +599,14 @@ def update_backtest_prices(file_bytes):
             continue
         try:
             import yfinance as yf
-            h = yf.Ticker(t).history(start=exp - timedelta(days=15),
-                                     end=exp + timedelta(days=25))
+            hc = _get_history(t)
+            if hc is not None and not hc.empty and \
+               min(d2.date() for d2 in hc.index) <= exp - timedelta(days=3):
+                h = hc
+            else:
+                time.sleep(0.4)
+                h = yf.Ticker(t).history(start=exp - timedelta(days=15),
+                                         end=exp + timedelta(days=25))
             if h is None or h.empty:
                 continue
             closes = h["Close"]
@@ -668,6 +691,107 @@ def sync_sources(file_bytes):
     out = io.BytesIO()
     wb.save(out)
     log.info(f"Sources rows added for {[t for t, _ in missing]}")
+    return out.getvalue()
+
+import re as _re2
+
+def finalize_scores(file_bytes):
+    """Authoritative LAST pass each run: sanitize garbage momentum (nan price
+    data must contribute F=0, not the +30 cap), recompute every score in
+    Python, write Score/Tier as VALUES (SM O/P + SS L/M), and re-sort
+    SS/SM/LV/HB descending with gate-FAIL names zeroed at the bottom.
+    Runs after movement.py, so upstream formula/sort corruption cannot
+    reach the delivered file."""
+    from openpyxl import load_workbook as _lwb
+    wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
+    ss, sm = wb["Short Screen"], wb["Scoring Model"]
+    lv = wb["Lockup Verification"] if "Lockup Verification" in wb.sheetnames else None
+    hb = wb["Historical Backtest"] if "Historical Backtest" in wb.sheetnames else None
+
+    def is_t(v):
+        s = str(v or "").strip()
+        return 1 <= len(s) <= 6 and s == s.upper() and " " not in s and any(c.isalpha() for c in s)
+
+    n = 0
+    scores = {}
+    for r in range(5, 300):
+        t = sm.cell(row=r, column=3).value
+        if not is_t(t):
+            break
+        t = str(t).strip(); n += 1
+        E  = float(sm.cell(row=r, column=5).value or 0)
+        Fl = float(sm.cell(row=r, column=6).value or 0.01)
+        I  = sm.cell(row=r, column=9).value
+        J  = sm.cell(row=r, column=10).value
+        L  = float(sm.cell(row=r, column=12).value or 0)
+        M  = float(sm.cell(row=r, column=13).value or 0)
+        Q  = float(sm.cell(row=r, column=17).value or 0)
+        S  = sm.cell(row=r, column=19).value
+        thesis = str(ss.cell(row=r, column=14).value or "")
+        if "nan%" in thesis and Q != 0:
+            log.info(f"  Momentum sanitized {t}: F {Q:+.0f} -> 0 (no price data)")
+            sm.cell(row=r, column=17).value = 0
+            Q = 0.0
+            ss.cell(row=r, column=14).value = _re2.sub(
+                r"\| Momentum update: 1W nan% / 1M nan% \| Sector \([^)]*\): F=[+-]?\d+",
+                "| Momentum: no price data this run — F neutralized to 0", thesis)
+        base, _t2 = calc_score(E, Fl, I if I is not None else "NM",
+                               J if J is not None else "NM", L, M)
+        raw = base + Q
+        score = int(excel_round(max(0, min(100, raw)), 0))
+        failed = S in ("FAIL", "ILLIQUID")
+        eff = 0 if failed else score
+        tier = "ILLIQUID" if failed else (
+            "High" if eff >= 75 else "Medium" if eff >= 50 else
+            "Low" if eff >= 25 else "Minimal")
+        scores[t] = (eff, tier, failed, raw)
+
+    for r in range(5, 5 + n):
+        t = str(sm.cell(row=r, column=3).value).strip()
+        eff, tier, _f, _raw = scores[t]
+        sm.cell(row=r, column=15).value = eff
+        sm.cell(row=r, column=16).value = tier
+        ss.cell(row=r, column=12).value = eff
+        ss.cell(row=r, column=13).value = tier
+
+    order = sorted(scores, key=lambda t: (not scores[t][2], scores[t][0], scores[t][3]),
+                   reverse=True)
+
+    def _rw(f, r):
+        return _re2.sub(r"([A-Z]{1,2})\d+(?![0-9])",
+                        lambda m: f"{m.group(1)}{r}", f)
+
+    def reorder(ws, tc, start, rank=False):
+        rows = {}
+        r = start
+        while is_t(ws.cell(row=r, column=tc).value):
+            rows[str(ws.cell(row=r, column=tc).value).strip()] = \
+                [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+            r += 1
+        if set(rows) != set(order):
+            log.error(f"  reorder skipped on {ws.title}: ticker set mismatch")
+            return
+        for i, t in enumerate(order):
+            rr = start + i
+            for c, v in enumerate(rows[t], start=1):
+                ws.cell(row=rr, column=c).value = v
+            if rank:
+                ws.cell(row=rr, column=2).value = i + 1
+            for c in range(2, ws.max_column + 1):
+                f = ws.cell(row=rr, column=c).value
+                if isinstance(f, str) and f.startswith("="):
+                    ws.cell(row=rr, column=c).value = _rw(f, rr)
+
+    reorder(ss, 3, 5, rank=True)
+    reorder(sm, 3, 5, rank=True)
+    if lv is not None:
+        reorder(lv, 2, 5)
+    if hb is not None:
+        reorder(hb, 2, 12)
+
+    out = io.BytesIO()
+    wb.save(out)
+    log.info(f"Scores finalized as values; top: {[(t, scores[t][0]) for t in order[:3]]}")
     return out.getvalue()
 
 def run():
@@ -800,6 +924,7 @@ def run():
         latest = sync_historical_backtest(latest)
         latest = update_backtest_prices(latest)
         latest = resolve_liquidity_gate(latest)
+        latest = finalize_scores(latest)
         upload_workbook(latest)
     except Exception as e:
         log.error(f"Historical Backtest sync failed: {e}")
