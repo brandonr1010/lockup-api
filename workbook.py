@@ -869,8 +869,7 @@ def run():
         file_bytes, backfilled = reconcile_table_to_workbook(file_bytes)
         if backfilled:
             seen_tickers |= get_workbook_tickers(file_bytes)
-            upload_workbook(file_bytes)
-            log.info(f"Reconcile: {backfilled} names backfilled and uploaded")
+            log.info(f"Reconcile: {backfilled} names backfilled (in-memory)")
     except Exception as e:
         log.error(f"Reconcile failed: {e}")
 
@@ -923,16 +922,19 @@ def run():
         except Exception as e:
             log.error(f"Failed to add {data['ticker']}: {e}")
 
-    if added > 0:
-        upload_workbook(file_bytes)
+    # (no mid-run upload — single upload happens at end of pipeline)
 
-    # Update momentum (price + Form 4) for all tickers — free, no Claude API
+    # Update momentum (price + Form 4) for all tickers — free, no Claude API.
+    # CRITICAL: the whole pipeline now runs on ONE in-memory copy with a single
+    # upload at the very end. Supabase Storage GETs are CDN-cached, so a
+    # download issued milliseconds after an upload returns the STALE object —
+    # the old download->upload round-trip between steps was erasing momentum's
+    # writes on every run (PUT 12:59:36.176 -> stale GET 12:59:36.254).
     log.info("Updating momentum in thesis cells...")
+    latest = file_bytes  # continue from the in-memory copy (includes any adds)
     try:
         from movement import update_momentum
-        latest = download_workbook()
         latest = update_momentum(latest)
-        upload_workbook(latest)
         log.info("Momentum update complete.")
     except Exception as e:
         log.error(f"Momentum update failed: {e}")
@@ -940,7 +942,6 @@ def run():
     # Keep Historical Backtest in lockstep with the Short Screen (self-row
     # formulas, contiguous rows, no merged-cell corruption).
     try:
-        latest = download_workbook()
         latest = enforce_universe_rules(latest)
         latest = sync_sources(latest)
         latest = sync_historical_backtest(latest)
@@ -948,7 +949,14 @@ def run():
         latest = resolve_liquidity_gate(latest)
         latest = finalize_scores(latest)
         upload_workbook(latest)
+        log.info("Single end-of-run upload complete.")
     except Exception as e:
-        log.error(f"Historical Backtest sync failed: {e}")
+        log.error(f"Final pipeline failed: {e}")
+        # salvage: upload whatever stage succeeded so momentum isn't lost
+        try:
+            upload_workbook(latest)
+            log.info("Salvage upload of last good stage complete.")
+        except Exception as e2:
+            log.error(f"Salvage upload failed: {e2}")
 
     log.info(f"=== Done. {added} names added. ===")
