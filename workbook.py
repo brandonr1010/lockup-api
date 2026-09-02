@@ -707,6 +707,21 @@ def sync_sources(file_bytes):
 
 import re as _re2
 
+_GREY_RGBS = {"FF808080", "FFA6A6A6", "FFBFBFBF", "FFD9D9D9", "FF7F7F7F", "FF595959"}
+
+def _is_grey(color):
+    """Grey detection across both encodings: literal ARGB and Excel theme
+    colors (theme 0/1 with a tint = greyscale). Formatting bugs recur when
+    only one encoding is handled."""
+    try:
+        if color.rgb and str(color.rgb).upper() in _GREY_RGBS:
+            return True
+        if color.rgb is None and color.theme in (0, 1) and abs(color.tint or 0) > 0.15:
+            return True
+    except Exception:
+        pass
+    return False
+
 def finalize_scores(file_bytes):
     """Authoritative LAST pass each run: sanitize garbage momentum (nan price
     data must contribute F=0, not the +30 cap), recompute every score in
@@ -810,6 +825,48 @@ def finalize_scores(file_bytes):
         reorder(lv, 2, 5)
     if hb is not None:
         reorder(hb, 2, 12)
+
+    # Re-paint score/tier cells BY TIER (the template's banding was positional,
+    # so re-sorting left colors stuck to old row positions — grey mid-table)
+    from openpyxl.styles import PatternFill, Font as _Font
+    PALETTE = {  # fill, font color, bold
+        "High":     ("FF1F3864", "FFFFFFFF", True),
+        "Medium":   ("FFFF8C00", "FFFFFFFF", True),
+        "Low":      ("FFFFC000", "FF000000", False),
+        "Minimal":  ("FF92D050", "FF000000", False),
+        "ILLIQUID": ("FFD9D9D9", "FF808080", False),
+    }
+    _no_fill = PatternFill(fill_type=None)
+    for i, t in enumerate(order):
+        rr = 5 + i
+        tier = scores[t][1]
+        fill_hex, font_hex, bold = PALETTE.get(tier, PALETTE["Minimal"])
+        fill = PatternFill(fill_type="solid", start_color=fill_hex, end_color=fill_hex)
+        for ws, tier_cols in ((ss, (12, 13)), (sm, (15, 16))):
+            # clear the positional grey row band across the whole data row,
+            # then paint only the score/tier cells by tier
+            for c in range(2, ws.max_column + 1):
+                if c in tier_cols:
+                    continue
+                cell = ws.cell(row=rr, column=c)
+                cur = cell.fill
+                if cur is not None and cur.fill_type == "solid":
+                    cell.fill = _no_fill
+                f = cell.font
+                if f is not None and f.color is not None and not f.italic \
+                        and _is_grey(f.color):
+                    # grey-band text back to black (leave gray-italic footnotes
+                    # alone). _is_grey also catches Excel theme-encoded greys,
+                    # which appear the first time the file is saved in Excel.
+                    cell.font = _Font(name=f.name or "Calibri", size=f.size or 11,
+                                      bold=f.b, italic=False, color="FF000000")
+            for c in tier_cols:
+                cell = ws.cell(row=rr, column=c)
+                cell.fill = fill
+                old_f = cell.font
+                cell.font = _Font(name=old_f.name or "Calibri", size=old_f.size or 11,
+                                  bold=bold, italic=(tier == "ILLIQUID"),
+                                  color=font_hex)
 
     out = io.BytesIO()
     wb.save(out)
