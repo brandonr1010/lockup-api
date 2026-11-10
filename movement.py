@@ -205,9 +205,6 @@ def update_momentum(file_bytes, newsapi_key=None):
 
     log.info(f"Momentum updated for {updated} tickers — re-sorting by updated scores...")
 
-    # Read prior ranks BEFORE re-sort (from hidden state sheet)
-    prior_state = _read_prior_state(wb)
-
     # Re-sort SS and SM after F scores are written
     try:
         _resort_after_f_update(wb)
@@ -215,28 +212,8 @@ def update_momentum(file_bytes, newsapi_key=None):
     except Exception as e:
         log.error(f"Re-sort failed: {e}")
 
-    # Capture current ranks after re-sort (row position = rank)
-    current_state = []
-    wsSS_after = wb["Short Screen"]
-    for r in range(5, 200):
-        tk = wsSS_after.cell(row=r, column=3).value
-        if not tk: break
-        current_state.append((tk, r - 4))  # (ticker, rank)
-
-    # Build/refresh Daily Movers tab (rank-based: top 5 climbers, top 5 fallers)
-    try:
-        _build_daily_movers(wb, current_state, prior_state)
-        log.info("Daily Movers tab updated.")
-    except Exception as e:
-        log.error(f"Daily Movers build failed: {e}")
-        import traceback
-        log.error(traceback.format_exc())
-
-    # Persist current ranks for next scan's comparison
-    try:
-        _write_current_state(wb, current_state)
-    except Exception as e:
-        log.error(f"State write failed: {e}")
+    # Daily Movers + rank state are built by workbook.finalize_scores AFTER the
+    # universe filter, liquidity gate and final sort, so ranks match the sheet.
 
     out = io.BytesIO()
     wb.save(out)
@@ -281,7 +258,8 @@ def _resort_after_f_update(wb):
             liq = wsSM.cell(row=r,column=18).value
             is_illiquid = False
             try:
-                if liq is not None and float(liq) < 10:
+                from lockup_engine import LIQ_GATE_MM
+                if liq is not None and float(liq) < LIQ_GATE_MM:
                     is_illiquid = True
             except (ValueError, TypeError):
                 is_illiquid = False
@@ -367,7 +345,8 @@ def _resort_after_f_update(wb):
             gate_val="pending"
         else:
             try:
-                gate_val="PASS" if float(liq_val)>=10 else "ILLIQUID"
+                from lockup_engine import LIQ_GATE_MM
+                gate_val="PASS" if float(liq_val)>=LIQ_GATE_MM else "ILLIQUID"
             except (ValueError,TypeError):
                 gate_val="pending"
         wsSM.cell(row=r,column=19).value=gate_val
@@ -488,12 +467,8 @@ def _build_daily_movers(wb, current_state, prior_state):
     for r in range(5,200):
         tk=wsSM_m.cell(row=r,column=3).value
         if not tk: break
-        liq=wsSM_m.cell(row=r,column=18).value
-        try:
-            if liq is not None and float(liq) < 10:
-                illiquid_tickers.add(tk)
-        except (ValueError, TypeError):
-            pass
+        if wsSM_m.cell(row=r,column=19).value in ("FAIL","ILLIQUID"):
+            illiquid_tickers.add(tk)
 
     # Compute rank changes (only names present in both prior and current, excluding illiquid)
     movers=[]

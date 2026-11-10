@@ -314,7 +314,7 @@ def sync_historical_backtest(file_bytes):
     log.info(f"Historical Backtest synced: {len(universe)} rows")
     return out.getvalue()
 
-LIQ_GATE_MM = 5.0  # $MM 30-day avg dollar volume; matches Scoring Model header "≥$5MM"
+from lockup_engine import LIQ_GATE_MM  # single shared threshold
 
 def resolve_liquidity_gate(file_bytes):
     """Force every Scoring Model liquidity gate (col S) to PASS or FAIL — never
@@ -324,6 +324,7 @@ def resolve_liquidity_gate(file_bytes):
     from openpyxl import load_workbook as _lwb
     wb = _lwb(io.BytesIO(file_bytes), keep_vba=True)
     ws = wb["Scoring Model"]
+    ws.cell(row=4, column=19).value = f"Liq Gate\n(≥${LIQ_GATE_MM:g}MM)"
     changed = 0
     for r in range(5, 300):
         t = ws.cell(row=r, column=3).value
@@ -772,10 +773,9 @@ def finalize_scores(file_bytes):
             ss.cell(row=r, column=14).value = _re2.sub(
                 r"\| Momentum update: 1W nan% / 1M nan% \| Sector \([^)]*\): F=[+-]?\d+",
                 "| Momentum: no price data this run — F neutralized to 0", thesis)
-        base, _t2 = calc_score(E, Fl, I if I is not None else "NM",
-                               J if J is not None else "NM", L, M)
-        raw = base + Q
-        score = int(excel_round(max(0, min(100, raw)), 0))
+        from lockup_engine import calc_score as _full_score
+        score, _t2, _A, _B, _C, raw = _full_score(
+            E, Fl, I if I is not None else "NM", J if J is not None else "NM", L, M, Q)
         failed = S in ("FAIL", "ILLIQUID")
         eff = 0 if failed else score
         tier = "ILLIQUID" if failed else (
@@ -867,6 +867,17 @@ def finalize_scores(file_bytes):
                 cell.font = _Font(name=old_f.name or "Calibri", size=old_f.size or 11,
                                   bold=bold, italic=(tier == "ILLIQUID"),
                                   color=font_hex)
+
+    # Daily Movers from the FINAL Short Screen order (FAIL names excluded inside)
+    try:
+        from movement import _read_prior_state, _build_daily_movers, _write_current_state
+        prior_state = _read_prior_state(wb)
+        current_state = [(t, i + 1) for i, t in enumerate(order)]
+        _build_daily_movers(wb, current_state, prior_state)
+        _write_current_state(wb, current_state)
+        log.info("Daily Movers built from final ranks.")
+    except Exception as e:
+        log.error(f"Daily Movers build failed: {e}")
 
     out = io.BytesIO()
     wb.save(out)
